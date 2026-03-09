@@ -1,0 +1,8 @@
+{
+  "index_store/data": {
+    "345a2e88-6ff3-47fe-9750-6c9951ff83fc": {
+      "__type__": "vector_store",
+      "__data__": "{\"index_id\": \"345a2e88-6ff3-47fe-9750-6c9951ff83fc\", \"summary\": null, \"nodes_dict\": {}, \"doc_id_dict\": {}, \"embeddings_dict\": {}}"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "mcp-probe-kit": {
+      "description": "AI 驱动的开发工具集，涵盖完整开发生命周期：需求分析、功能开发、代码审查、Bug修复、测试生成、Git管理、UI设计等 21+ 工具。支持工作流编排和自动化循环开发，提升开发效率和代码质量。",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-probe-kit@latest"
+      ]
+    },
+    "brain": {
+      "description": "AI记忆思维管理系统，模拟类人思维记忆过程。解决AI缺乏持久的记忆能力，每次对话都是全新的开始的问题。",
+      "command": "npx",
+      "args": [
+        "-y",
+        "digital-brain-mcp"
+      ],
+      "env": {
+        "BRAIN_MCP_STORAGE_PATH": "./memory_data"
+      }
+    },
+    "kali-pentest": {
+      "description": "AI驱动的渗透测试人员。",
+      "command": "npx",
+      "args": [
+        "-y",
+        "ai-hacker-mcp"
+      ]
+    }
+  }
+}
