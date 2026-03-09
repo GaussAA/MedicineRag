@@ -1,14 +1,8 @@
 """医疗知识问答系统 - 主页面"""
 
 import streamlit as st
-from pathlib import Path
 
-from backend.config import config
-from backend.services.qa_service import QAService, QARequest
-from backend.services.doc_service import DocService
-from backend.services.security_service import SecurityService
-from rag.engine import RAGEngine
-from rag.prompts import DISCLAIMER_TEXT
+from app.api_client import get_api_client
 
 
 # 页面配置
@@ -18,16 +12,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-
-@st.cache_resource
-def init_services():
-    """初始化服务（单例）"""
-    rag_engine = RAGEngine()
-    security_service = SecurityService()
-    qa_service = QAService(rag_engine, security_service)
-    doc_service = DocService(rag_engine)
-    return qa_service, doc_service, rag_engine
 
 
 def init_session_state():
@@ -40,21 +24,29 @@ def init_session_state():
 
     if "agreed_to_terms" not in st.session_state:
         st.session_state.agreed_to_terms = False
+    
+    if "api_client" not in st.session_state:
+        st.session_state.api_client = get_api_client()
 
 
-def show_sidebar(qa_service, doc_service):
+def show_sidebar():
     """显示侧边栏"""
+    api_client = st.session_state.api_client
+    
     with st.sidebar:
         st.title("📚 知识库管理")
 
         # 显示知识库状态
-        stats = doc_service.get_stats()
-        st.markdown(f"""
-        **知识库状态：**
-        - 文档数量：{stats['document_count']}
-        - 索引块数：{stats['indexed_chunks']}
-        - 总大小：{stats['total_size']}
-        """)
+        try:
+            stats = api_client.get_stats()
+            st.markdown(f"""
+            **知识库状态：**
+            - 文档数量：{stats.get('document_count', 0)}
+            - 索引块数：{stats.get('indexed_chunks', 0)}
+            - 总大小：{stats.get('total_size', '0 KB')}
+            """)
+        except Exception as e:
+            st.markdown("**知识库状态：** 无法获取")
 
         st.divider()
 
@@ -68,13 +60,15 @@ def show_sidebar(qa_service, doc_service):
         if uploaded_file:
             if st.button("上传并构建索引", type="primary"):
                 with st.spinner("正在处理文档..."):
-                    result = doc_service.upload_document(uploaded_file, uploaded_file.name)
-                    if result["status"] == "success":
-                        st.success(result["message"])
-                        # 清除缓存重新加载
-                        st.rerun()
-                    else:
-                        st.error(result["message"])
+                    try:
+                        result = api_client.upload_document_from_uploaded(uploaded_file, uploaded_file.name)
+                        if result.get("status") == "success":
+                            st.success(result.get("message", "上传成功"))
+                            st.rerun()
+                        else:
+                            st.error(result.get("message", "上传失败"))
+                    except Exception as e:
+                        st.error(f"上传失败: {e}")
 
         st.divider()
 
@@ -85,22 +79,28 @@ def show_sidebar(qa_service, doc_service):
         with col1:
             if st.button("重建索引"):
                 with st.spinner("正在重建索引..."):
-                    result = doc_service.rebuild_index()
-                    if result["status"] == "success":
-                        st.success(result["message"])
-                        st.rerun()
-                    else:
-                        st.error(result["message"])
+                    try:
+                        result = api_client.rebuild_index()
+                        if result.get("status") == "success":
+                            st.success(result.get("message", "重建成功"))
+                            st.rerun()
+                        else:
+                            st.error(result.get("message", "重建失败"))
+                    except Exception as e:
+                        st.error(f"重建失败: {e}")
 
         with col2:
             if st.button("清空知识库"):
                 with st.spinner("正在清空..."):
-                    result = doc_service.clear_knowledge_base()
-                    if result["status"] == "success":
-                        st.success(result["message"])
-                        st.rerun()
-                    else:
-                        st.error(result["message"])
+                    try:
+                        result = api_client.clear_knowledge_base()
+                        if result.get("status") == "success":
+                            st.success(result.get("message", "清空成功"))
+                            st.rerun()
+                        else:
+                            st.error(result.get("message", "清空失败"))
+                    except Exception as e:
+                        st.error(f"清空失败: {e}")
 
         st.divider()
 
@@ -132,7 +132,7 @@ def main():
     try:
         # 初始化
         init_session_state()
-        qa_service, doc_service, rag_engine = init_services()
+        api_client = st.session_state.api_client
 
         # 检查是否首次使用
         if not st.session_state.agreed_to_terms:
@@ -144,10 +144,14 @@ def main():
         st.markdown("### 基于RAG技术的医疗健康咨询")
 
         # 侧边栏
-        show_sidebar(qa_service, doc_service)
+        show_sidebar()
 
         # 知识库状态提示
-        if not rag_engine.is_ready():
+        try:
+            stats = api_client.get_stats()
+            if stats.get('document_count', 0) == 0:
+                st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
+        except:
             st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
 
         # 显示对话历史
@@ -205,41 +209,43 @@ def main():
 
                 # 使用流式API
                 with st.spinner("正在思考..."):
-                    # 优化：先执行检索并缓存结果，避免流式完成后重复检索
-                    # 检查缓存中是否有当前问题的检索结果
-                    cache_key = f"retrieve_{prompt[:50]}"
-                    if cache_key not in st.session_state:
-                        # 首次检索，缓存结果
-                        retrieved_docs = rag_engine.retrieve(prompt, top_k=config.TOP_K)
-                        st.session_state[cache_key] = retrieved_docs
-                    else:
-                        # 使用缓存的检索结果
-                        retrieved_docs = st.session_state[cache_key]
+                    try:
+                        # 获取流式响应（传递对话历史）
+                        stream_generator = api_client.ask_stream(
+                            question=prompt,
+                            history=st.session_state.history
+                        )
 
-                    # 获取来源信息
-                    sources = rag_engine.get_retrieved_sources(retrieved_docs) if retrieved_docs else []
-
-                    # 获取流式响应（传递对话历史）
-                    stream_generator = qa_service.ask_stream(QARequest(
-                        question=prompt,
-                        chat_history=st.session_state.history
-                    ))
-
-                    # 流式显示
-                    for chunk in stream_generator:
-                        full_response += chunk
-                        response_container.markdown(full_response)
-
-                    # 流式完成后显示参考来源（使用已缓存的检索结果，无需再次检索）
-                    # 显示参考来源
-                    if sources:
-                        with st.expander("📄 参考来源"):
-                            for idx, src in enumerate(sources, 1):
-                                score_text = f" (相似度: {src['score']:.1f}%)" if src.get("score") else ""
-                                st.markdown(f"**{idx}. {src['source']}**{score_text}")
-                                st.markdown(f"_{src['content']}_")
+                        # 流式显示
+                        sources = []
+                        for chunk in stream_generator:
+                            # 检查是否是sources数据（特殊标记）
+                            if chunk.startswith("__SOURCE__: "):
+                                import json
+                                source_data = json.loads(chunk[12:])
+                                sources.append(source_data)
+                            elif chunk.strip():
+                                # 非source数据直接显示
+                                full_response += chunk
+                                response_container.markdown(full_response)
+                            
+                        # 流式完成后显示参考来源
+                        if sources:
+                            with st.expander("📄 参考来源"):
+                                for idx, src in enumerate(sources, 1):
+                                    score_text = f" (相似度: {src.get('score', 0):.1f}%)" if src.get("score") else ""
+                                    st.markdown(f"**{idx}. {src.get('source', '未知来源')}**{score_text}")
+                                    content = src.get('content', '')
+                                    if len(content) > 200:
+                                        content = content[:200] + "..."
+                                    st.markdown(f"_{content}_")
+                                    
+                    except Exception as e:
+                        st.error(f"请求失败: {e}")
+                        full_response = "抱歉，处理您的请求时发生错误。"
+                        
                 # 显示免责声明
-                st.error(DISCLAIMER_TEXT)
+                st.error("⚠️ 以上回答仅供参考，不能替代医生诊断。如有严重症状，请立即就医。")
 
             # 保存到历史
             st.session_state.messages.append({
@@ -257,10 +263,6 @@ def main():
     except Exception as e:
         """全局错误边界"""
         import traceback
-        from backend.logging_config import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"应用错误: {e}", exc_info=True)
-        
         st.error(f"⚠️ 系统发生错误：{str(e)[:100]}")
         st.info("请刷新页面重试，如果问题持续存在，请联系管理员。")
         

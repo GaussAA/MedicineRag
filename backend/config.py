@@ -35,6 +35,9 @@ def _safe_bool(value: str, default: bool, name: str) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
+        # 空字符串返回默认值
+        if not value.strip():
+            return default
         return value.lower() in ("true", "1", "yes", "on")
     logger.warning(f"配置项 {name} 值 '{value}' 无效，使用默认值 {default}")
     return default
@@ -98,6 +101,10 @@ class Config:
     RATE_LIMIT_UPLOAD_MAX: int = _safe_int(os.getenv("RATE_LIMIT_UPLOAD_MAX", ""), 10, "RATE_LIMIT_UPLOAD_MAX")
     RATE_LIMIT_OTHER_MAX: int = _safe_int(os.getenv("RATE_LIMIT_OTHER_MAX", ""), 60, "RATE_LIMIT_OTHER_MAX")
     RATE_LIMIT_WINDOW: int = _safe_int(os.getenv("RATE_LIMIT_WINDOW", ""), 60, "RATE_LIMIT_WINDOW")
+    
+    # 文件上传配置
+    MAX_FILE_SIZE_MB: int = _safe_int(os.getenv("MAX_FILE_SIZE_MB", ""), 50, "MAX_FILE_SIZE_MB")  # 单个文件最大大小（MB）
+    ENABLE_DUPLICATE_CHECK: bool = _safe_bool(os.getenv("ENABLE_DUPLICATE_CHECK", ""), True, "ENABLE_DUPLICATE_CHECK")  # 是否启用重复文件检测
 
     @classmethod
     def get_docs_dir(cls) -> Path:

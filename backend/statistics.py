@@ -45,9 +45,16 @@ class QAStats:
 
     def _atexit_callback(self):
         """进程退出时的回调，确保数据保存"""
-        logger.info("检测到进程退出，正在保存统计数据...")
-        self._running = False
-        self.flush()
+        try:
+            self._running = False
+            # 不在atexit中调用flush，因为此时日志系统可能已经关闭
+            # 直接尝试同步保存
+            try:
+                self._save_stats()
+            except Exception:
+                pass  # 忽略保存失败
+        except Exception:
+            pass  # 忽略所有异常
 
     def _load_stats(self) -> Dict[str, Any]:
         """加载统计数据"""
@@ -80,32 +87,45 @@ class QAStats:
         }
 
     def _save_stats(self):
-        """保存统计数据（线程安全，原子写入）"""
+        """保存统计数据到文件"""
         try:
-            # 转换为可JSON序列化的格式
+            # 确保目录存在
+            stats_dir = self.stats_file.parent
+            if not stats_dir.exists():
+                stats_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 准备统计数据
             stats_to_save = self._stats.copy()
             stats_to_save["question_types"] = dict(stats_to_save.get("question_types", {}))
 
             # 原子写入：先写临时文件，再重命名
-            temp_fd, temp_path = tempfile.mkstemp(
-                dir=self.stats_file.parent,
-                prefix='.tmp_stats_',
-                suffix='.json'
-            )
+            try:
+                temp_fd, temp_path = tempfile.mkstemp(
+                    dir=str(stats_dir),
+                    prefix='.tmp_stats_',
+                    suffix='.json'
+                )
+            except FileNotFoundError:
+                # 目录已被删除，使用系统临时目录
+                temp_fd, temp_path = tempfile.mkstemp(
+                    prefix='.tmp_stats_',
+                    suffix='.json'
+                )
+            
             try:
                 with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
                     json.dump(stats_to_save, f, ensure_ascii=False, indent=2)
 
                 # 重命名原子操作，确保文件完整性
                 os.replace(temp_path, self.stats_file)
-                logger.debug("统计数据已保存")
             except Exception:
                 # 清理临时文件
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                 raise
-        except Exception as e:
-            logger.error(f"保存统计文件失败: {e}")
+        except Exception:
+            # atexit回调中静默失败，不使用logger
+            pass
 
     def _start_flush_thread(self):
         """启动后台刷新线程"""

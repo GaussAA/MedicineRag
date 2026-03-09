@@ -294,6 +294,14 @@ class RAGEngine:
                     logger.warning(f"添加文档块 {i} 失败: {e}")
                     continue
 
+            # 刷新embedding缓存到磁盘（确保新生成的embedding被持久化）
+            if self.embedding_cache and hasattr(self.embedding_cache, '_save_to_disk'):
+                try:
+                    self.embedding_cache._save_to_disk()
+                    logger.info("Embedding缓存已刷新到磁盘")
+                except Exception as e:
+                    logger.warning(f"缓存刷新失败: {e}")
+
             return {
                 "status": "success",
                 "doc_count": len(chunks),

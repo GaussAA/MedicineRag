@@ -1,7 +1,16 @@
-"""重排序模块 - 使用 BGE-Reranker 模型对检索结果进行重排序（优化版）"""
+"""重排序模块 - 使用双塔模型对检索结果进行重排序
+
+注意：由于Ollama Python客户端没有原生rerank API，这里使用双塔模型（bi-encoder）方式：
+- 分别获取查询和文档的embedding
+- 计算余弦相似度作为相关性分数
+- 按相关性排序
+
+这种方法适用于BGE-M3等支持embedding的模型。
+如果使用专门的Cross-Encoder模型(如BGE-Reranker)，建议在Ollama支持rerank API后更新。
+"""
 
 import os
-import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
@@ -18,10 +27,15 @@ logger = get_logger(__name__)
 
 
 class Reranker:
-    """重排序器 - 使用 Cross-Encoder 模型对检索结果进行重新排序
+    """重排序器 - 使用双塔模型（bi-encoder）方式对检索结果进行重新排序
     
-    BGE-Reranker-v2-m3 使用双塔编码方式，同时获取查询和文档的 embedding，
-    通过计算余弦相似度来评估相关性。
+    工作原理：
+    1. 获取查询的embedding向量
+    2. 并发获取每个文档的embedding向量
+    3. 计算查询与每个文档的余弦相似度
+    4. 按相似度从高到低排序
+    
+    注意：如果专门的rerank模型不可用，会自动fallback到embedding模型。
     """
     
     def __init__(self, ollama_client: Optional[OllamaClient] = None):
@@ -34,28 +48,53 @@ class Reranker:
         self.model = config.OLLAMA_RERANK_MODEL
         self.enabled = config.ENABLE_RERANK
         self.initial_top_k = config.RERANK_INITIAL_TOP_K
+        # fallback模型：使用embedding模型
+        self.fallback_model = config.OLLAMA_EMBED_MODEL
+        self._use_fallback = False
         
-        logger.info(f"重排序器初始化完成: model={self.model}, enabled={self.enabled}, initial_top_k={self.initial_top_k}")
+        logger.info(f"重排序器初始化: model={self.model}, fallback={self.fallback_model}, enabled={self.enabled}, initial_top_k={self.initial_top_k}")
     
-    def _get_embedding(self, text: str) -> List[float]:
+    def _get_embedding(self, text: str) -> Optional[List[float]]:
         """获取文本的 embedding 向量
+        
+        优先使用rerank模型，如果失败则fallback到embedding模型。
         
         Args:
             text: 输入文本
             
         Returns:
-            embedding 向量
+            embedding 向量，失败返回 None
         """
-        # 截断过长的文本（使用配置值）
+        # 截断过长的文本
         max_length = config.EMBEDDING_MAX_LENGTH
         if len(text) > max_length:
             text = text[:max_length]
         
-        response = self.ollama_client.embeddings(
-            model=self.model,
-            prompt=text
-        )
-        return response.embedding
+        # 尝试使用rerank模型
+        model_to_use = self.model if not self._use_fallback else self.fallback_model
+        
+        try:
+            response = self.ollama_client.embeddings(
+                model=model_to_use,
+                prompt=text
+            )
+            return response.embedding
+        except Exception as e:
+            # 如果使用rerank模型失败，记录并尝试fallback
+            if not self._use_fallback:
+                logger.warning(f"使用rerank模型 {self.model} 获取embedding失败: {e}，尝试fallback到 {self.fallback_model}")
+                self._use_fallback = True
+                try:
+                    response = self.ollama_client.embeddings(
+                        model=self.fallback_model,
+                        prompt=text
+                    )
+                    return response.embedding
+                except Exception as fallback_error:
+                    logger.error(f"Fallback模型 {self.fallback_model} 也失败: {fallback_error}")
+                    return None
+            logger.error(f"获取embedding失败: {e}")
+            return None
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """计算两个向量的余弦相似度
@@ -79,7 +118,7 @@ class Reranker:
     def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: Optional[int] = None) -> List[Dict[str, Any]]:
         """对文档列表进行重排序
         
-        使用 BGE-Reranker 模型计算查询与每个文档的相关性分数，
+        使用双塔模型计算查询与每个文档的相关性分数，
         然后按相关性从高到低排序。
         
         Args:
@@ -111,27 +150,37 @@ class Reranker:
             # 获取查询的 embedding
             query_embedding = self._get_embedding(query)
             
-            # 使用线程池并发获取文档embeddings（优化点）
+            # 如果获取embedding失败，返回原始结果
+            if query_embedding is None:
+                logger.warning("获取查询embedding失败，返回原始检索结果")
+                return documents[:top_k]
+            
+            # 使用线程池并发获取文档embeddings
             doc_texts = [(i, doc.get('text', '')) for i, doc in enumerate(documents) if doc.get('text')]
             
             # 并发获取文档embeddings
             doc_embeddings = {}
-            max_workers = min(8, len(doc_texts))  # 最多8个并发
+            max_workers = min(8, len(doc_texts))
             
             def get_doc_embedding(idx_text):
                 idx, text = idx_text
-                try:
-                    return idx, self._get_embedding(text)
-                except Exception as e:
-                    logger.warning(f"获取文档 {idx} embedding 失败: {e}")
-                    return idx, None
+                embedding = self._get_embedding(text)
+                return idx, embedding
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(get_doc_embedding, item): item[0] for item in doc_texts}
                 for future in as_completed(futures):
-                    idx, embedding = future.result()
-                    if embedding is not None:
-                        doc_embeddings[idx] = embedding
+                    try:
+                        idx, embedding = future.result()
+                        if embedding is not None:
+                            doc_embeddings[idx] = embedding
+                    except Exception as e:
+                        logger.warning(f"获取文档embedding失败: {e}")
+            
+            # 如果没有成功获取任何文档embedding，返回原始结果
+            if not doc_embeddings:
+                logger.warning("没有成功获取任何文档embedding，返回原始检索结果")
+                return documents[:top_k]
             
             # 计算每个文档与查询的相关性分数
             scored_docs = []
@@ -149,6 +198,7 @@ class Reranker:
                 new_doc = doc.copy()
                 new_doc['rerank_score'] = float(similarity)
                 new_doc['original_index'] = i
+                
                 # 如果有原始分数，保留并与重排序分数结合
                 if 'score' in doc:
                     # 综合分数：重排序分数占 70%，原始分数占 30%

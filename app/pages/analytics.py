@@ -3,7 +3,7 @@
 import streamlit as st
 from datetime import datetime
 
-from backend.statistics import get_stats_instance
+from app.api_client import get_api_client
 
 
 def main():
@@ -16,21 +16,30 @@ def main():
     st.title("📊 系统运行统计")
     st.markdown("---")
 
-    stats_instance = get_stats_instance()
-    stats = stats_instance.get_summary()
+    # 获取API客户端
+    api_client = get_api_client()
+    
+    try:
+        # 获取统计信息
+        qa_stats = api_client.get_qa_stats()
+        summary = qa_stats.get("summary", {})
+    except Exception as e:
+        st.error(f"获取统计信息失败: {e}")
+        summary = {}
+        qa_stats = {"question_type_distribution": {}, "recent_questions": [], "unanswered_questions": []}
 
     # 核心指标行
     st.subheader("📈 核心指标")
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("总问题数", stats.get("total_questions", 0))
+        st.metric("总问题数", summary.get("total_questions", 0))
     with col2:
-        st.metric("成功率", stats.get("success_rate", "0%"))
+        st.metric("成功率", summary.get("success_rate", "0%"))
     with col3:
-        st.metric("无结果数", stats.get("no_result_answers", 0))
+        st.metric("无结果数", summary.get("no_result_answers", 0))
     with col4:
-        st.metric("敏感拦截", stats.get("sensitive_blocked", 0))
+        st.metric("敏感拦截", summary.get("sensitive_blocked", 0))
 
     st.markdown("---")
 
@@ -39,20 +48,20 @@ def main():
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("平均响应时间", f"{stats.get('avg_response_time_ms', 0):.0f} ms")
+        st.metric("平均响应时间", f"{summary.get('avg_response_time_ms', 0):.0f} ms")
     with col2:
-        st.metric("平均检索时间", f"{stats.get('avg_retrieval_time_ms', 0):.0f} ms")
+        st.metric("平均检索时间", f"{summary.get('avg_retrieval_time_ms', 0):.0f} ms")
     with col3:
-        st.metric("平均LLM时间", f"{stats.get('avg_llm_time_ms', 0):.0f} ms")
+        st.metric("平均LLM时间", f"{summary.get('avg_llm_time_ms', 0):.0f} ms")
     with col4:
-        st.metric("缓存命中率", stats.get("cache_hit_rate", "0%"))
+        st.metric("缓存命中率", summary.get("cache_hit_rate", "0%"))
 
     st.markdown("---")
 
     # 问题类型分布
     st.subheader("📂 问题类型分布")
     
-    type_dist = stats_instance.get_question_type_distribution()
+    type_dist = qa_stats.get("question_type_distribution", {})
     if type_dist:
         # 转换类型名称
         type_names = {
@@ -78,7 +87,7 @@ def main():
     # 最近问题
     st.subheader("💬 最近问题")
     
-    recent = stats_instance.get_recent_questions(10)
+    recent = qa_stats.get("recent_questions", [])
     if recent:
         for i, q in enumerate(recent, 1):
             status_emoji = "✅" if q.get("success") else "❌"
@@ -93,7 +102,7 @@ def main():
     # 知识库缺口
     st.subheader("🔍 知识库缺口（未回答问题）")
     
-    unanswered = stats_instance.get_unanswered_questions()
+    unanswered = qa_stats.get("unanswered_questions", [])
     if unanswered:
         st.warning(f"以下问题未能从知识库中找到答案，共 {len(unanswered)} 个：")
         for i, q in enumerate(unanswered[:20], 1):  # 只显示前20个
@@ -111,16 +120,20 @@ def main():
     
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("紧急症状警告", stats.get("emergency_warnings", 0))
+        st.metric("紧急症状警告", summary.get("emergency_warnings", 0))
     with col2:
-        st.metric("敏感内容拦截", stats.get("sensitive_blocked", 0))
+        st.metric("敏感内容拦截", summary.get("sensitive_blocked", 0))
 
     # 清理缓存按钮
     st.markdown("---")
     if st.button("🗑️ 清空统计数据", type="secondary"):
-        stats_instance.clear_stats()
-        st.success("统计数据已清空！")
-        st.rerun()
+        try:
+            result = api_client.clear_stats()
+            if result.get("status") == "success":
+                st.success("统计数据已清空！")
+                st.rerun()
+        except Exception as e:
+            st.error(f"清空失败: {e}")
 
 
 if __name__ == "__main__":

@@ -169,7 +169,152 @@ app.add_middleware(
 )
 
 
-# 限流中间件
+# ============================================================================
+# 全局异常处理器
+# ============================================================================
+
+from fastapi import HTTPException
+from backend.exceptions import (
+    MedicalRAGException,
+    LLMException,
+    VectorStoreError,
+    DocumentParseError,
+    SecurityException,
+    ServiceException,
+    RAGEngineException
+)
+
+
+# 定义别名，使代码更清晰
+RateLimitException = ServiceException  # 使用ServiceException作为限流异常
+MedicalQAException = MedicalRAGException  # 使用基础异常类
+
+
+@app.exception_handler(MedicalQAException)
+async def medical_qa_exception_handler(request: Request, exc: MedicalQAException):
+    """医疗问答系统基础异常处理器"""
+    logger.error(f"医疗问答系统异常: {exc.message}", exc_info=True)
+    return JSONResponse(
+        status_code=exc.status_code or 500,
+        content={
+            "error": exc.message,
+            "error_code": exc.error_code,
+            "details": exc.details
+        }
+    )
+
+
+@app.exception_handler(LLMException)
+async def llm_exception_handler(request: Request, exc: LLMException):
+    """LLM异常处理器"""
+    logger.error(f"LLM错误: {exc.message}", exc_info=True)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "LLM服务暂时不可用",
+            "error_code": "LLM_ERROR",
+            "details": {"message": exc.message}
+        }
+    )
+
+
+@app.exception_handler(VectorStoreError)
+async def vector_store_exception_handler(request: Request, exc: VectorStoreError):
+    """向量存储异常处理器"""
+    logger.error(f"向量存储错误: {exc.message}", exc_info=True)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "向量数据库服务暂时不可用",
+            "error_code": "VECTOR_STORE_ERROR",
+            "details": {"message": exc.message}
+        }
+    )
+
+
+@app.exception_handler(DocumentParseError)
+async def document_parse_exception_handler(request: Request, exc: DocumentParseError):
+    """文档解析异常处理器"""
+    logger.error(f"文档解析错误: {exc.message}", exc_info=True)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "文档解析失败",
+            "error_code": "DOCUMENT_PARSE_ERROR",
+            "details": {"message": exc.message}
+        }
+    )
+
+
+@app.exception_handler(SecurityException)
+async def security_exception_handler(request: Request, exc: SecurityException):
+    """安全异常处理器"""
+    logger.warning(f"安全检查失败: {exc.message}")
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": exc.message,
+            "error_code": exc.error_code or "SECURITY_ERROR",
+            "details": exc.details
+        }
+    )
+
+
+@app.exception_handler(RateLimitException)
+async def rate_limit_exception_handler(request: Request, exc: RateLimitException):
+    """限流异常处理器"""
+    logger.warning(f"限流触发: {exc.message}")
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "请求过于频繁",
+            "error_code": "RATE_LIMIT_ERROR",
+            "details": {"retry_after": exc.retry_after}
+        }
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """FastAPI HTTPException处理器"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "error_code": f"HTTP_{exc.status_code}"
+        }
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_exception_handler(request: Request, exc: ValueError):
+    """值错误异常处理器"""
+    logger.error(f"值错误: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "请求参数无效",
+            "error_code": "VALUE_ERROR",
+            "details": {"message": str(exc)}
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """通用异常处理器（最后一道防线）"""
+    logger.error(f"未处理的异常: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "服务器内部错误",
+            "error_code": "INTERNAL_ERROR",
+            "details": {"message": "请联系管理员"}
+        }
+    )
+
+
+# ============================================================================
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     """API限流中间件（配置化版本）

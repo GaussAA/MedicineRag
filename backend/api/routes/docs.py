@@ -1,6 +1,5 @@
 """文档管理API路由"""
 
-from functools import lru_cache
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -10,7 +9,9 @@ from backend.api.models import (
     DeleteResponse, RebuildResponse, StatsResponse,
     ErrorResponse
 )
+from backend.api.dependencies import get_doc_service_dep, get_rag_engine_dep
 from backend.services.doc_service import DocService
+from backend.statistics import get_stats_instance
 from rag.engine import RAGEngine
 from backend.logging_config import get_logger
 
@@ -19,16 +20,16 @@ logger = get_logger(__name__)
 # 创建路由
 router = APIRouter(prefix="/docs", tags=["文档管理"])
 
-
-@lru_cache()
-def get_rag_engine() -> RAGEngine:
-    """获取RAG引擎实例（单例）"""
-    return RAGEngine()
+# 使用统一的依赖工厂
+get_rag_engine = get_rag_engine_dep
 
 
 def get_doc_service(rag_engine: RAGEngine = Depends(get_rag_engine)) -> DocService:
-    """获取文档服务实例（依赖注入）"""
-    return DocService(rag_engine)
+    """获取文档服务实例（依赖注入）
+    
+    保持向后兼容的函数签名，内部调用统一的依赖工厂
+    """
+    return get_doc_service_dep(rag_engine)
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -87,10 +88,11 @@ async def list_documents(doc_service: DocService = Depends(get_doc_service)):
         
         doc_list = [
             DocInfo(
-                doc_id=doc.get("id", ""),
-                file_name=doc.get("file_name", ""),
+                doc_id=doc.get("name", ""),  # 使用 name 作为 doc_id
+                file_name=doc.get("name", ""),
                 chunk_count=doc.get("chunk_count", 0),
-                size=doc.get("size", 0)
+                size=doc.get("size", 0),  # 原始字节大小
+                size_formatted=doc.get("size_formatted", "")  # 格式化大小
             )
             for doc in docs
         ]
@@ -127,13 +129,13 @@ async def delete_document(doc_id: str, doc_service: DocService = Depends(get_doc
 
 @router.post("/rebuild", response_model=RebuildResponse)
 async def rebuild_index(doc_service: DocService = Depends(get_doc_service)):
-    """重建索引
+    """重建索引（异步后台处理）
     
     Returns:
         RebuildResponse: 重建结果
     """
     try:
-        result = doc_service.rebuild_index()
+        result = doc_service.rebuild_index(async_mode=True)
         
         return RebuildResponse(
             status=result.get("status", "success"),
@@ -143,6 +145,21 @@ async def rebuild_index(doc_service: DocService = Depends(get_doc_service)):
         
     except Exception as e:
         logger.error(f"重建索引错误: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rebuild/status")
+async def get_rebuild_status(doc_service: DocService = Depends(get_doc_service)):
+    """获取重建索引任务状态
+    
+    Returns:
+        重建任务状态
+    """
+    try:
+        status = doc_service.get_rebuild_status()
+        return status
+    except Exception as e:
+        logger.error(f"获取重建状态错误: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -167,23 +184,67 @@ async def clear_knowledge_base(doc_service: DocService = Depends(get_doc_service
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(doc_service: DocService = Depends(get_doc_service)):
-    """获取统计信息
+async def get_stats(doc_service: DocService = Depends(get_doc_service_dep)):
+    """获取统计信息（知识库 + 问答）
     
     Returns:
         StatsResponse: 统计信息
     """
     try:
-        stats = doc_service.get_stats()
+        # 获取知识库统计
+        doc_stats = doc_service.get_stats()
+        
+        # 获取问答统计
+        stats_instance = get_stats_instance()
+        qa_stats = stats_instance.get_summary()
         
         return StatsResponse(
-            total_questions=0,  # API层面不统计问答
-            successful_answers=0,
-            success_rate="N/A",
-            avg_response_time_ms=0,
-            question_types={}
+            # 知识库统计
+            document_count=doc_stats.get("document_count", 0),
+            indexed_chunks=doc_stats.get("indexed_chunks", 0),
+            total_size=doc_stats.get("total_size", "0 KB"),
+            # 问答统计
+            total_questions=qa_stats.get("total_questions", 0),
+            successful_answers=qa_stats.get("successful_answers", 0),
+            success_rate=qa_stats.get("success_rate", "0%"),
+            avg_response_time_ms=qa_stats.get("avg_response_time_ms", 0),
+            question_types=qa_stats.get("question_types", {})
         )
         
     except Exception as e:
         logger.error(f"获取统计错误: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 问答统计端点
+@router.get("/stats/qa")
+async def get_qa_stats():
+    """获取问答统计详细信息"""
+    try:
+        stats_instance = get_stats_instance()
+        summary = stats_instance.get_summary()
+        type_dist = stats_instance.get_question_type_distribution()
+        recent = stats_instance.get_recent_questions(20)
+        unanswered = stats_instance.get_unanswered_questions()
+        
+        return {
+            "summary": summary,
+            "question_type_distribution": type_dist,
+            "recent_questions": recent,
+            "unanswered_questions": unanswered
+        }
+    except Exception as e:
+        logger.error(f"获取问答统计错误: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stats/clear")
+async def clear_stats():
+    """清空问答统计数据"""
+    try:
+        stats_instance = get_stats_instance()
+        stats_instance.clear_stats()
+        return {"status": "success", "message": "统计数据已清空"}
+    except Exception as e:
+        logger.error(f"清空统计错误: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

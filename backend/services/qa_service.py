@@ -1,11 +1,13 @@
 """问答服务模块 - 优化版，增加问题类型识别和统计"""
 
 import time
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
+from typing import Optional, List, Dict, Any
 
 from rag.engine import RAGEngine
 from backend.services.security_service import SecurityService, CheckResult
+from backend.services.question_type_detector import QuestionTypeDetector, get_question_type_detector
+from backend.services.confidence_calculator import ConfidenceCalculator, get_confidence_calculator
 from backend.logging_config import get_logger
 from backend.exceptions import (
     LLMException,
@@ -13,39 +15,11 @@ from backend.exceptions import (
     KnowledgeBaseEmptyError,
     NoRelevantDocumentsError,
 )
-from rag.prompts import DISCLAIMER_TEXT, QUESTION_TYPE_KEYWORDS
+from rag.prompts import DISCLAIMER_TEXT
 from backend.config import config
 from backend.statistics import get_stats_instance
 
 logger = get_logger(__name__)
-
-
-def detect_question_type(question: str) -> Optional[str]:
-    """检测问题类型
-
-    Args:
-        question: 用户问题
-
-    Returns:
-        问题类型：symptom/disease/medication/examination 或 None
-    """
-    question_lower = question.lower()
-
-    # 统计每种类型的关键词匹配数
-    type_scores = {}
-    for qtype, keywords in QUESTION_TYPE_KEYWORDS.items():
-        score = sum(1 for kw in keywords if kw in question_lower)
-        type_scores[qtype] = score
-
-    # 返回得分最高的类型
-    max_score = max(type_scores.values())
-    if max_score > 0:
-        for qtype, score in type_scores.items():
-            if score == max_score:
-                logger.info(f"检测到问题类型: {qtype} (匹配{score}个关键词)")
-                return qtype
-
-    return None
 
 
 @dataclass
@@ -69,29 +43,63 @@ class QAResponse:
 
 
 class QAService:
-    """问答服务类 - 优化版"""
-
-    def __init__(self, rag_engine: RAGEngine, security_service: SecurityService):
+    """问答服务类 - 优化版
+    
+    职责：
+    - 协调各子服务处理问答请求
+    - 管理问答流程
+    """
+    
+    def __init__(
+        self,
+        rag_engine: RAGEngine,
+        security_service: SecurityService,
+        question_type_detector: QuestionTypeDetector = None,
+        confidence_calculator: ConfidenceCalculator = None
+    ):
         self.rag_engine = rag_engine
         self.security_service = security_service
+        self.question_type_detector = question_type_detector or get_question_type_detector()
+        self.confidence_calculator = confidence_calculator or get_confidence_calculator()
+    
+    def _check_safety(self, question: str) -> Optional[CheckResult]:
+        """安全检查
+        
+        Returns:
+            CheckResult if unsafe, None if safe
+        """
+        check_result = self.security_service.check_content(question)
+        if not check_result.is_safe:
+            logger.warning(f"检测到敏感内容，类别: {check_result.category}")
+            return check_result
+        return None
+    
+    def _check_emergency(self, question: str) -> bool:
+        """紧急症状检查
+        
+        Returns:
+            True if emergency symptom detected
+        """
+        return self.security_service.is_emergency_symptom(question)
 
     def ask(self, request: QARequest) -> QAResponse:
         """处理问答请求 - 优化版
-
-        Args:
-            request: 问答请求
-
-        Returns:
-            QAResponse: 问答响应
+        
+        流程：
+        1. 检测问题类型
+        2. 安全检查（敏感词+紧急症状）
+        3. 检查知识库状态
+        4. 检索文档
+        5. 计算置信度
+        6. 生成回答
         """
         # 0. 检测问题类型
-        question_type = detect_question_type(request.question)
+        question_type = self.question_type_detector.detect(request.question)
         logger.info(f"问题类型: {question_type or '通用'}, 问题: {request.question[:30]}...")
 
         # 1. 敏感词检查
-        check_result = self.security_service.check_content(request.question)
-        if not check_result.is_safe:
-            logger.warning(f"检测到敏感内容，类别: {check_result.category}")
+        check_result = self._check_safety(request.question)
+        if check_result:
             return QAResponse(
                 answer=check_result.warning_message,
                 sources=[],
@@ -101,7 +109,7 @@ class QAService:
             )
 
         # 2. 紧急症状检查
-        if self.security_service.is_emergency_symptom(request.question):
+        if self._check_emergency(request.question):
             logger.warning(f"检测到紧急症状: {request.question[:30]}...")
             return QAResponse(
                 answer=self.security_service.get_emergency_message(),
@@ -153,21 +161,10 @@ class QAService:
                 confidence_level="low"
             )
 
-        # 7. 置信度检查 - 优化版
-        # 获取最高相似度分数
-        top_score = retrieved_docs[0].get('score') if retrieved_docs else None
-        confidence_level = "high"
-        confidence_warning = ""
-
-        if top_score is not None:
-            # 转换为相似度百分比
-            similarity = (1 - top_score) * 100
-            if similarity < 60:
-                confidence_level = "low"
-                confidence_warning = f"⚠️ 知识库匹配度较低（{similarity:.0f}%），回答仅供参考"
-            elif similarity < 75:
-                confidence_level = "medium"
-                confidence_warning = f"ℹ️ 知识库匹配度一般（{similarity:.0f}%）"
+        # 7. 计算置信度
+        confidence_result = self.confidence_calculator.calculate_with_sources(retrieved_docs)
+        confidence_level = confidence_result["confidence_level"]
+        confidence_warning = confidence_result["warning"]
 
         # 8. 调用LLM生成回答（传入问题类型）
         try:
@@ -176,7 +173,7 @@ class QAService:
             logger.error(f"LLM生成失败: {e}")
             return QAResponse(
                 answer=f"生成回答时发生错误，请稍后重试。错误: {str(e)}",
-                sources=self.rag_engine.get_retrieved_sources(retrieved_docs),
+                sources=confidence_result.get("sources", []),
                 disclaimer=DISCLAIMER_TEXT,
                 question_type=question_type,
                 confidence_level="low"
@@ -185,7 +182,7 @@ class QAService:
             logger.error(f"生成回答时发生未知错误: {e}", exc_info=True)
             return QAResponse(
                 answer="生成回答时发生未知错误，请稍后重试。",
-                sources=self.rag_engine.get_retrieved_sources(retrieved_docs),
+                sources=confidence_result.get("sources", []),
                 disclaimer=DISCLAIMER_TEXT,
                 question_type=question_type,
                 confidence_level="low"
@@ -238,7 +235,7 @@ class QAService:
         retrieval_start = time.time()
         
         # 0. 检测问题类型
-        question_type = detect_question_type(request.question)
+        question_type = self.question_type_detector.detect(request.question)
         logger.info(f"流式问答 - 问题类型: {question_type or '通用'}, 问题: {request.question[:30]}...")
 
         # 1. 敏感词检查
@@ -318,16 +315,11 @@ class QAService:
             yield "抱歉，在我的知识库中未找到与您问题相关的信息。建议您：\n1. 尝试使用不同的关键词\n2. 上传更多相关文档到知识库\n3. 咨询专业医生获取准确信息。"
             return
 
-        # 7. 置信度检查
-        top_score = retrieved_docs[0].get('score') if retrieved_docs else None
-        confidence_warning = ""
+        # 7. 置信度检查 - 使用置信度计算器
+        confidence_level, confidence_warning = self.confidence_calculator.calculate(retrieved_docs)
         
-        if top_score is not None:
-            similarity = (1 - top_score) * 100
-            if similarity < 60:
-                confidence_warning = f"⚠️ 知识库匹配度较低（{similarity:.0f}%），回答仅供参考\n\n"
-            elif similarity < 75:
-                confidence_warning = f"ℹ️ 知识库匹配度一般（{similarity:.0f}%）\n\n"
+        if confidence_warning:
+            confidence_warning = confidence_warning + "\n\n"
 
         # 7. 先输出置信度警告（如有）
         if confidence_warning:

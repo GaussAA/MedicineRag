@@ -42,7 +42,8 @@ class DocInfo(BaseModel):
     doc_id: str = Field(..., description="文档ID")
     file_name: str = Field(..., description="文件名")
     chunk_count: int = Field(default=0, description="块数量")
-    size: int = Field(default=0, description="文件大小")
+    size: int = Field(default=0, description="文件大小（字节）")
+    size_formatted: str = Field(default="", description="文件大小（格式化）")
 
 
 class DocListResponse(BaseModel):
@@ -67,6 +68,11 @@ class RebuildResponse(BaseModel):
 
 class StatsResponse(BaseModel):
     """统计响应"""
+    # 知识库统计
+    document_count: int = Field(default=0, description="文档数量")
+    indexed_chunks: int = Field(default=0, description="索引块数")
+    total_size: str = Field(default="0 KB", description="总大小")
+    # 问答统计
     total_questions: int = Field(default=0, description="总问题数")
     successful_answers: int = Field(default=0, description="成功回答数")
     success_rate: str = Field(default="0%", description="成功率")

@@ -1,17 +1,49 @@
 {
-  "total_questions": 4,
-  "successful_answers": 4,
+  "total_questions": 8,
+  "successful_answers": 8,
   "failed_answers": 0,
   "no_result_answers": 0,
   "question_types": {
-    "disease": 2
+    "disease": 4
   },
   "sensitive_blocked": 0,
   "emergency_warnings": 0,
-  "avg_response_time_ms": 107426.54991149902,
-  "avg_retrieval_time_ms": 21.484434604644775,
-  "avg_llm_time_ms": 103850.48335790634,
+  "avg_response_time_ms": 101573.34697246552,
+  "avg_retrieval_time_ms": 24.837732315063477,
+  "avg_llm_time_ms": 99675.56437849998,
   "recent_questions": [
+    {
+      "question": "啥是高血压",
+      "type": "disease",
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 208676.97286605835,
+      "timestamp": "2026-03-09T21:58:22.305029"
+    },
+    {
+      "question": "啥是高血压",
+      "type": "disease",
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 80019.37079429626,
+      "timestamp": "2026-03-09T20:01:04.834270"
+    },
+    {
+      "question": "hello",
+      "type": null,
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 26983.602046966553,
+      "timestamp": "2026-03-09T19:56:00.092926"
+    },
+    {
+      "question": "string",
+      "type": null,
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 67200.63042640686,
+      "timestamp": "2026-03-09T19:49:28.492339"
+    },
     {
       "question": "啥是糖尿病",
       "type": "disease",

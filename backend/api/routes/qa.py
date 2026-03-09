@@ -1,6 +1,5 @@
 """问答API路由"""
 
-from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -8,11 +7,16 @@ from backend.api.models import (
     QARequest, QAResponse, StreamQARequest,
     ErrorResponse
 )
+from backend.api.dependencies import (
+    get_rag_engine_dep,
+    get_security_service_dep,
+    get_qa_service_dep
+)
 from backend.services.qa_service import QAService, QARequest as QARequestModel
-from backend.services.security_service import SecurityService
 from rag.engine import RAGEngine
+from backend.services.security_service import SecurityService
 from backend.logging_config import get_logger
-from backend.exceptions import LLMException, VectorStoreError
+from backend.exceptions import LLMException, VectorStoreError, EmbeddingError
 
 logger = get_logger(__name__)
 
@@ -20,24 +24,20 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/qa", tags=["问答"])
 
 
-@lru_cache()
-def get_rag_engine() -> RAGEngine:
-    """获取RAG引擎实例（单例）"""
-    return RAGEngine()
-
-
-@lru_cache()
-def get_security_service() -> SecurityService:
-    """获取安全服务实例（单例）"""
-    return SecurityService()
+# 使用统一的依赖工厂
+get_rag_engine = get_rag_engine_dep
+get_security_service = get_security_service_dep
 
 
 def get_qa_service(
     rag_engine: RAGEngine = Depends(get_rag_engine),
     security_service: SecurityService = Depends(get_security_service)
 ) -> QAService:
-    """获取QA服务实例（依赖注入）"""
-    return QAService(rag_engine, security_service)
+    """获取QA服务实例（依赖注入）
+    
+    保持向后兼容的函数签名，内部调用统一的依赖工厂
+    """
+    return get_qa_service_dep(rag_engine, security_service)
 
 
 @router.post("/ask", response_model=QAResponse)
@@ -98,9 +98,23 @@ async def stream_qa(request: StreamQARequest, qa_service: QAService = Depends(ge
         
         def generate():
             """生成器函数 - 改进版"""
+            import json
+            
             try:
                 # 发送开始标志
                 yield "data: {\"type\": \"start\"}\n\n"
+                
+                # 预检索sources（在流式生成前获取）
+                try:
+                    retrieved_docs = qa_service.rag_engine.retrieve(request.question, top_k=5)
+                    if retrieved_docs:
+                        sources = qa_service.rag_engine.get_retrieved_sources(retrieved_docs)
+                        # 先发送sources
+                        for src in sources:
+                            src_data = json.dumps({"type": "source", "data": src})
+                            yield f"data: {src_data}\n\n"
+                except Exception as src_err:
+                    logger.warning(f"预检索sources失败: {src_err}")
                 
                 # 发送心跳（保持连接）
                 import time
@@ -121,7 +135,6 @@ async def stream_qa(request: StreamQARequest, qa_service: QAService = Depends(ge
                 
             except Exception as e:
                 logger.error(f"流式问答错误: {e}")
-                import json
                 error_data = json.dumps({
                     "type": "error",
                     "message": str(e)[:200],

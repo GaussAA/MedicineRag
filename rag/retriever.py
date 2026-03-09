@@ -9,6 +9,8 @@
 from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import Counter
 import re
+import jieba
+import jieba.analyse
 
 from backend.logging_config import get_logger
 from backend.config import config
@@ -221,20 +223,68 @@ class HybridRetriever:
             return []
     
     def _extract_keywords(self, text: str) -> List[str]:
-        """提取关键词"""
-        # 简单实现：提取长度>=2的连续中文字符
-        keywords = re.findall(r'[\u4e00-\u9fa5]{2,}', text)
+        """提取关键词 - 使用jieba分词
         
-        # 过滤常见停用词
-        stop_words = {
-            "请问", "什么", "怎么", "如何", "为什么", "有没有",
-            "可以", "能够", "应该", "需要", "关于", "我的"
-        }
-        
-        keywords = [k for k in keywords if k not in stop_words]
-        
-        # 返回前5个关键词
-        return keywords[:5]
+        使用jieba的TF-IDF算法提取关键词，比纯正则匹配更智能
+        """
+        try:
+            # 停用词列表
+            stop_words = {
+                "请问", "什么", "怎么", "如何", "为什么", "有没有",
+                "可以", "能够", "应该", "需要", "关于", "我的",
+                "这个", "那个", "一些", "哪些", "那样", "这样",
+                "时候", "地方", "情况", "问题", "原因", "方法",
+                "治疗", "预防", "注意", "建议", "可能", "是否"
+            }
+            
+            # 方法1：使用jieba的TF-IDF提取关键词（更准确）
+            try:
+                # 获取TF-IDF关键词，最多5个
+                tfidf_keywords = jieba.analyse.extract_tags(
+                    text, 
+                    topK=5, 
+                    withWeight=False
+                )
+                # 过滤停用词
+                keywords = [k for k in tfidf_keywords if k not in stop_words and len(k) >= 2]
+                if keywords:
+                    logger.debug(f"TF-IDF提取关键词: {keywords}")
+                    return keywords
+            except Exception as e:
+                logger.warning(f"TF-IDF关键词提取失败: {e}")
+            
+            # 方法2：使用jieba分词 + 词性筛选（备用方案）
+            try:
+                # 使用精确模式分词
+                words = jieba.lcut(text)
+                
+                # 筛选：保留名词(n)、动词(v)、形容词(a)、名词短语
+                # 长度>=2的词
+                keywords = [
+                    w for w in words 
+                    if len(w) >= 2 
+                    and w not in stop_words
+                    and not w.isdigit()
+                    and not re.match(r'^[\d\.\,\-\+]+$', w)
+                ]
+                
+                # 去重并返回前5个
+                keywords = list(dict.fromkeys(keywords))[:5]
+                logger.debug(f"分词提取关键词: {keywords}")
+                return keywords
+                
+            except Exception as e:
+                logger.warning(f"分词关键词提取失败: {e}")
+            
+            # 方法3：备用 - 纯正则匹配（原有逻辑）
+            keywords = re.findall(r'[\u4e00-\u9fa5]{2,}', text)
+            keywords = [k for k in keywords if k not in stop_words]
+            return keywords[:5]
+            
+        except Exception as e:
+            logger.error(f"关键词提取异常: {e}")
+            # 备用方案
+            return re.findall(r'[\u4e00-\u9fa5]{2,}', text)[:5]
     
     def _merge_results(
         self,

@@ -2,10 +2,7 @@
 
 import streamlit as st
 
-from backend.config import config
-from backend.services.doc_service import DocService
-from backend.services.security_service import SecurityService
-from rag.engine import RAGEngine
+from app.api_client import get_api_client
 
 
 # 页面配置
@@ -16,22 +13,13 @@ st.set_page_config(
 )
 
 
-@st.cache_resource
-def init_services():
-    """初始化服务（单例）"""
-    rag_engine = RAGEngine()
-    security_service = SecurityService()
-    doc_service = DocService(rag_engine)
-    return doc_service, rag_engine
-
-
 def main():
     """主函数"""
     st.title("📚 知识库管理")
     st.markdown("---")
 
-    # 初始化服务
-    doc_service, rag_engine = init_services()
+    # 获取API客户端
+    api_client = get_api_client()
 
     # 侧边栏导航
     with st.sidebar:
@@ -41,15 +29,19 @@ def main():
 
     # 显示统计信息
     st.subheader("📊 知识库统计")
-    stats = doc_service.get_stats()
+    try:
+        stats = api_client.get_stats()
+    except Exception as e:
+        st.error(f"获取统计信息失败: {e}")
+        stats = {'document_count': 0, 'indexed_chunks': 0, 'total_size': '0 KB'}
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("文档数量", stats['document_count'])
+        st.metric("文档数量", stats.get('document_count', 0))
     with col2:
-        st.metric("索引块数", stats['indexed_chunks'])
+        st.metric("索引块数", stats.get('indexed_chunks', 0))
     with col3:
-        st.metric("总大小", stats['total_size'])
+        st.metric("总大小", stats.get('total_size', '0 KB'))
 
     st.markdown("---")
 
@@ -61,7 +53,7 @@ def main():
         uploaded_file = st.file_uploader(
             "选择医疗文档",
             type=["pdf", "docx", "txt", "html", "md"],
-            help="支持的格式：PDF、Word、TXT、HTML、Markdown"
+            help=f"支持的格式：PDF、Word、TXT、HTML、Markdown | 最大文件大小：50MB | 不允许重复上传"
         )
 
     with col2:
@@ -69,16 +61,24 @@ def main():
         st.write("")
         if uploaded_file and st.button("上传并处理", type="primary"):
             with st.spinner("正在处理文档..."):
-                result = doc_service.upload_document(uploaded_file, uploaded_file.name)
-                if result["status"] == "success":
-                    st.success(result["message"])
-                    st.rerun()
-                else:
-                    st.error(result["message"])
+                try:
+                    result = api_client.upload_document_from_uploaded(uploaded_file, uploaded_file.name)
+                    if result["status"] == "success":
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
+                except Exception as e:
+                    st.error(f"上传失败: {e}")
 
     # 显示支持的格式
     with st.expander("支持的格式说明"):
-        st.markdown("""
+        st.markdown(f"""
+        ### 上传限制
+        - **文件大小**：单个文件最大 50MB
+        - **重复检测**：基于内容哈希检测，不允许上传相同内容的文件
+        
+        ### 支持的格式
         - **PDF**: 医学指南、诊疗手册等
         - **Word**: 文档资料
         - **TXT**: 纯文本格式的医疗知识
@@ -91,7 +91,11 @@ def main():
     # 文档列表
     st.subheader("📁 已上传文档")
 
-    documents = doc_service.list_documents()
+    try:
+        documents = api_client.list_documents()
+    except Exception as e:
+        st.error(f"获取文档列表失败: {e}")
+        documents = []
 
     if not documents:
         st.info("暂无上传的文档，请先上传医疗文档。")
@@ -101,19 +105,23 @@ def main():
             with st.container():
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 with col1:
-                    st.write(f"📄 **{doc['name']}**")
+                    st.write(f"📄 **{doc.get('name', doc.get('file_name', 'Unknown'))}**")
                 with col2:
-                    st.write(f"类型: {doc['type']}")
+                    st.write(f"类型: {doc.get('type', 'N/A')}")
                 with col3:
-                    st.write(f"大小: {doc['size']}")
+                    st.write(f"大小: {doc.get('size', 'N/A')}")
                 with col4:
-                    if st.button("删除", key=f"del_{doc['name']}"):
-                        result = doc_service.delete_document(doc['name'])
-                        if result["status"] == "success":
-                            st.success("删除成功")
-                            st.rerun()
-                        else:
-                            st.error(result["message"])
+                    doc_id = doc.get('doc_id') or doc.get('name') or doc.get('file_name')
+                    if doc_id and st.button("删除", key=f"del_{doc_id}"):
+                        try:
+                            result = api_client.delete_document(doc_id)
+                            if result["status"] == "success":
+                                st.success("删除成功")
+                                st.rerun()
+                            else:
+                                st.error(result["message"])
+                        except Exception as e:
+                            st.error(f"删除失败: {e}")
                 st.divider()
 
     st.markdown("---")
@@ -124,24 +132,65 @@ def main():
     col1, col2, col3 = st.columns(3)
 
     with col1:
+        # 使用session state跟踪重建状态
+        if 'rebuild_active' not in st.session_state:
+            st.session_state.rebuild_active = False
+        if 'rebuild_status' not in st.session_state:
+            st.session_state.rebuild_status = None
+        
         if st.button("🔄 重建索引", use_container_width=True):
-            with st.spinner("正在重建索引..."):
-                result = doc_service.rebuild_index()
-                if result["status"] == "success":
-                    st.success(result["message"])
+            with st.spinner("正在启动重建任务..."):
+                try:
+                    result = api_client.rebuild_index()
+                    if result.get("status") in ["started", "success"]:
+                        st.session_state.rebuild_active = True
+                        st.session_state.rebuild_status = result
+                        st.rerun()
+                    else:
+                        st.error(result.get("message", "重建失败"))
+                except Exception as e:
+                    st.error(f"重建索引失败: {e}")
+        
+        # 如果有正在进行的重建任务，显示状态
+        if st.session_state.rebuild_active:
+            try:
+                status = api_client.get_rebuild_status()
+                if status.get("status") == "running":
+                    progress = status.get("progress", 0)
+                    total = status.get("total", 0)
+                    message = status.get("message", "处理中...")
+                    st.info(f"{message} ({progress}/{total})")
+                    # 自动刷新
+                    import time
+                    time.sleep(2)
                     st.rerun()
-                else:
-                    st.error(result["message"])
+                elif status.get("status") == "completed":
+                    st.success(status.get("message", "重建完成"))
+                    st.session_state.rebuild_active = False
+                    st.session_state.rebuild_status = None
+                    st.rerun()
+                elif status.get("status") == "failed":
+                    st.error(f"重建失败: {status.get('error', '未知错误')}")
+                    st.session_state.rebuild_active = False
+                    st.session_state.rebuild_status = None
+                elif status.get("status") == "idle":
+                    st.session_state.rebuild_active = False
+            except Exception as e:
+                st.warning(f"获取状态失败: {e}")
+                st.session_state.rebuild_active = False
 
     with col2:
         if st.button("🗑️ 清空知识库", use_container_width=True):
             with st.spinner("正在清空..."):
-                result = doc_service.clear_knowledge_base()
-                if result["status"] == "success":
-                    st.success(result["message"])
-                    st.rerun()
-                else:
-                    st.error(result["message"])
+                try:
+                    result = api_client.clear_knowledge_base()
+                    if result["status"] == "success":
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
+                except Exception as e:
+                    st.error(f"清空失败: {e}")
 
     with col3:
         if st.button("🔁 刷新页面", use_container_width=True):
