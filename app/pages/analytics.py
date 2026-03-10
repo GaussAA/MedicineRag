@@ -124,16 +124,32 @@ def main():
     with col2:
         st.metric("敏感内容拦截", summary.get("sensitive_blocked", 0))
 
-    # 清理缓存按钮
+    # 清理缓存按钮（添加确认对话框）
     st.markdown("---")
-    if st.button("🗑️ 清空统计数据", type="secondary"):
-        try:
-            result = api_client.clear_stats()
-            if result.get("status") == "success":
-                st.success("统计数据已清空！")
+    if "show_stats_clear_confirm" not in st.session_state:
+        st.session_state.show_stats_clear_confirm = False
+    
+    if st.session_state.show_stats_clear_confirm:
+        st.warning("⚠️ 确定要清空所有统计数据吗？")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✅ 确认清空", type="primary"):
+                try:
+                    result = api_client.clear_stats()
+                    if result.get("status") == "success":
+                        st.success("统计数据已清空！")
+                        st.session_state.show_stats_clear_confirm = False
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"清空失败: {e}")
+        with col_no:
+            if st.button("❌ 取消"):
+                st.session_state.show_stats_clear_confirm = False
                 st.rerun()
-        except Exception as e:
-            st.error(f"清空失败: {e}")
+    else:
+        if st.button("🗑️ 清空统计数据", type="secondary"):
+            st.session_state.show_stats_clear_confirm = True
+            st.rerun()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 """
 
 import json
+import streamlit as st
 import requests
 from typing import Optional, List, Dict, Any, Generator
 from urllib.parse import urljoin
@@ -15,7 +16,12 @@ DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 
 class APIClient:
-    """API客户端"""
+    """API客户端（优化版）"""
+    
+    # 默认超时配置
+    DEFAULT_TIMEOUT = 30  # 默认超时30秒
+    STREAM_TIMEOUT = 300  # 流式问答超时5分钟
+    UPLOAD_TIMEOUT = 600  # 文件上传超时10分钟
     
     def __init__(self, base_url: str = None):
         """初始化API客户端
@@ -25,8 +31,27 @@ class APIClient:
         """
         self.base_url = base_url or DEFAULT_API_BASE_URL
         self.session = requests.Session()
-        # 注意：不要在这里设置 Content-Type，让 requests 根据请求类型自动处理
-        # 文件上传需要 multipart/form-data，JSON需要 application/json
+        
+        # 添加连接池和重试策略
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+        )
+        
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=20
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        
+        # 设置默认请求头
         self.session.headers.update({
             "Accept": "application/json"
         })
@@ -55,7 +80,11 @@ class APIClient:
         
         try:
             # 使用 request 方法并设置 stream=True
-            response = self.session.request("POST", url, json=payload, timeout=300, stream=True)
+            response = self.session.request(
+                "POST", url, json=payload, 
+                timeout=self.STREAM_TIMEOUT,  # 使用类常量
+                stream=True
+            )
             response.raise_for_status()
                 
             # 处理SSE流式响应
@@ -114,7 +143,7 @@ class APIClient:
             "history": history or []
         }
         
-        response = self.session.post(url, json=payload, timeout=300)
+        response = self.session.post(url, json=payload, timeout=self.STREAM_TIMEOUT)
         response.raise_for_status()
         return response.json()
     
@@ -134,7 +163,7 @@ class APIClient:
         
         with open(file_path, 'rb') as f:
             files = {'file': (file_name or 'document', f)}
-            response = self.session.post(url, files=files, timeout=300)
+            response = self.session.post(url, files=files, timeout=self.UPLOAD_TIMEOUT)
         
         response.raise_for_status()
         return response.json()
@@ -196,7 +225,7 @@ class APIClient:
             重建结果（立即返回，后台处理）
         """
         url = self._get_url("/api/docs/rebuild")
-        response = self.session.post(url, timeout=30)  # 短超时，只等待启动
+        response = self.session.post(url, timeout=self.DEFAULT_TIMEOUT)  # 短超时，只等待启动
         response.raise_for_status()
         return response.json()
     
@@ -207,7 +236,7 @@ class APIClient:
             重建任务状态
         """
         url = self._get_url("/api/docs/rebuild/status")
-        response = self.session.get(url, timeout=30)
+        response = self.session.get(url, timeout=self.DEFAULT_TIMEOUT)
         response.raise_for_status()
         return response.json()
     
@@ -280,16 +309,18 @@ class APIClient:
         return response.json()
 
 
-# 全局客户端实例
-_api_client: Optional[APIClient] = None
+import streamlit as st
+
+from backend.config import config
+
+# 默认API地址
+DEFAULT_API_BASE_URL = "http://localhost:8000"
 
 
+@st.cache_resource
 def get_api_client() -> APIClient:
-    """获取API客户端单例"""
-    global _api_client
-    if _api_client is None:
-        _api_client = APIClient()
-    return _api_client
+    """获取API客户端单例（使用Streamlit缓存）"""
+    return APIClient()
 
 
 def reset_api_client(base_url: str = None):
@@ -298,5 +329,6 @@ def reset_api_client(base_url: str = None):
     Args:
         base_url: 新的API地址
     """
-    global _api_client
-    _api_client = APIClient(base_url)
+    # 清除缓存后重新获取
+    st.cache_resource.clear()
+    return get_api_client()

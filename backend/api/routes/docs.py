@@ -1,7 +1,7 @@
 """文档管理API路由"""
 
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from backend.api.models import (
@@ -33,14 +33,19 @@ def get_doc_service(rag_engine: RAGEngine = Depends(get_rag_engine)) -> DocServi
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_document(file: UploadFile = File(...), doc_service: DocService = Depends(get_doc_service)):
-    """上传文档接口
+async def upload_document(
+    file: UploadFile = File(...),
+    doc_service: DocService = Depends(get_doc_service),
+    background_tasks: BackgroundTasks = None
+):
+    """上传文档接口（支持异步后台处理）
     
     Args:
         file: 上传的文件
+        background_tasks: 后台任务处理器
         
     Returns:
-        UploadResponse: 上传结果
+        UploadResponse: 上传结果（立即返回，文档处理在后台进行）
     """
     try:
         # 保存上传的文件
@@ -55,15 +60,36 @@ async def upload_document(file: UploadFile = File(...), doc_service: DocService 
             tmp_path = tmp.name
         
         try:
-            # 上传并索引
-            result = doc_service.upload_document(tmp_path, file.filename)
+            # 检查文件大小，决定是否使用后台处理
+            file_size_mb = len(content) / (1024 * 1024)
+            large_file_threshold = 5  # 超过5MB使用后台处理
             
-            return UploadResponse(
-                status=result.get("status", "error"),
-                message=result.get("message", ""),
-                file_name=file.filename,
-                doc_count=result.get("doc_count")
-            )
+            if file_size_mb > large_file_threshold and background_tasks:
+                # 大文件：后台异步处理
+                def process_document():
+                    try:
+                        doc_service.upload_document(tmp_path, file.filename)
+                    except Exception as e:
+                        logger.error(f"后台文档处理失败: {e}")
+                
+                background_tasks.add_task(process_document)
+                
+                return UploadResponse(
+                    status="processing",
+                    message=f"文件较大（{file_size_mb:.1f}MB），正在后台处理中...",
+                    file_name=file.filename,
+                    doc_count=None
+                )
+            else:
+                # 小文件：同步处理
+                result = doc_service.upload_document(tmp_path, file.filename)
+                
+                return UploadResponse(
+                    status=result.get("status", "error"),
+                    message=result.get("message", ""),
+                    file_name=file.filename,
+                    doc_count=result.get("doc_count")
+                )
         finally:
             # 清理临时文件
             try:

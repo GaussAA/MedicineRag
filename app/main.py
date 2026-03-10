@@ -27,25 +27,49 @@ def init_session_state():
     
     if "api_client" not in st.session_state:
         st.session_state.api_client = get_api_client()
+    
+    # Bug修复：建议按钮功能
+    if "pending_prompt" not in st.session_state:
+        st.session_state.pending_prompt = None
+    
+    # 性能优化：stats缓存（30秒过期）
+    if "_stats_cache" not in st.session_state:
+        st.session_state._stats_cache = {"data": None, "timestamp": 0}
+    if "_stats_cache_timeout" not in st.session_state:
+        st.session_state._stats_cache_timeout = 30  # 30秒
 
 
 def show_sidebar():
     """显示侧边栏"""
+    import time
     api_client = st.session_state.api_client
     
     with st.sidebar:
         st.title("📚 知识库管理")
 
-        # 显示知识库状态
-        try:
-            stats = api_client.get_stats()
+        # 性能优化：使用缓存的stats，避免重复请求
+        current_time = time.time()
+        cache = st.session_state._stats_cache
+        cache_timeout = st.session_state._stats_cache_timeout
+        
+        if (cache["data"] is None or 
+            current_time - cache["timestamp"] > cache_timeout):
+            # 缓存过期，重新获取
+            try:
+                cache["data"] = api_client.get_stats()
+                cache["timestamp"] = current_time
+            except:
+                cache["data"] = None
+        
+        stats = cache["data"]
+        if stats:
             st.markdown(f"""
             **知识库状态：**
             - 文档数量：{stats.get('document_count', 0)}
             - 索引块数：{stats.get('indexed_chunks', 0)}
             - 总大小：{stats.get('total_size', '0 KB')}
             """)
-        except Exception as e:
+        else:
             st.markdown("**知识库状态：** 无法获取")
 
         st.divider()
@@ -64,6 +88,8 @@ def show_sidebar():
                         result = api_client.upload_document_from_uploaded(uploaded_file, uploaded_file.name)
                         if result.get("status") == "success":
                             st.success(result.get("message", "上传成功"))
+                            # 性能优化：清除stats缓存
+                            st.session_state._stats_cache = {"data": None, "timestamp": 0}
                             st.rerun()
                         else:
                             st.error(result.get("message", "上传失败"))
@@ -83,6 +109,8 @@ def show_sidebar():
                         result = api_client.rebuild_index()
                         if result.get("status") == "success":
                             st.success(result.get("message", "重建成功"))
+                            # 性能优化：清除stats缓存
+                            st.session_state._stats_cache = {"data": None, "timestamp": 0}
                             st.rerun()
                         else:
                             st.error(result.get("message", "重建失败"))
@@ -146,12 +174,11 @@ def main():
         # 侧边栏
         show_sidebar()
 
-        # 知识库状态提示
-        try:
-            stats = api_client.get_stats()
-            if stats.get('document_count', 0) == 0:
-                st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
-        except:
+        # 知识库状态提示（使用缓存）
+        stats = st.session_state._stats_cache.get("data")
+        if stats and stats.get('document_count', 0) == 0:
+            st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
+        elif not stats:
             st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
 
         # 显示对话历史
@@ -189,14 +216,22 @@ def main():
                 cols = st.columns(len(suggestions))
                 for i, suggestion in enumerate(suggestions):
                     if cols[i].button(f"💭 {suggestion}", key=f"suggestion_{i}"):
-                        prompt = suggestion
-                        # 清除按钮点击状态并重新运行
+                        # Bug修复：保存到session_state而不是直接rerun
+                        st.session_state.pending_prompt = suggestion
                         st.rerun()
             
             st.divider()
 
-        # 聊天输入
-        if prompt := st.chat_input("请输入您的医疗问题..."):
+        # Bug修复：检查是否有待发送的建议问题
+        if st.session_state.pending_prompt:
+            prompt = st.session_state.pending_prompt
+            st.session_state.pending_prompt = None  # 清除待发送状态
+        else:
+            prompt = None
+        
+        # 聊天输入（限制500字符）
+        input_placeholder = "请输入您的医疗问题... (最多500字)"
+        if prompt := st.chat_input(input_placeholder, max_chars=500):
             # 用户消息
             st.chat_message("user").markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -209,6 +244,7 @@ def main():
 
                 # 使用流式API
                 with st.spinner("正在思考..."):
+                    sources = []  # Bug修复：先初始化，避免异常时未定义
                     try:
                         # 获取流式响应（传递对话历史）
                         stream_generator = api_client.ask_stream(
@@ -217,7 +253,6 @@ def main():
                         )
 
                         # 流式显示
-                        sources = []
                         for chunk in stream_generator:
                             # 检查是否是sources数据（特殊标记）
                             if chunk.startswith("__SOURCE__: "):

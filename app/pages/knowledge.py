@@ -160,10 +160,13 @@ def main():
                     total = status.get("total", 0)
                     message = status.get("message", "处理中...")
                     st.info(f"{message} ({progress}/{total})")
-                    # 自动刷新
-                    import time
-                    time.sleep(2)
-                    st.rerun()
+                    # 性能优化：使用手动刷新按钮替代阻塞式sleep
+                    col_refresh1, col_refresh2 = st.columns([3, 1])
+                    with col_refresh1:
+                        st.caption("点击刷新查看最新状态...")
+                    with col_refresh2:
+                        if st.button("🔄 刷新", key="refresh_status"):
+                            st.rerun()
                 elif status.get("status") == "completed":
                     st.success(status.get("message", "重建完成"))
                     st.session_state.rebuild_active = False
@@ -180,17 +183,34 @@ def main():
                 st.session_state.rebuild_active = False
 
     with col2:
-        if st.button("🗑️ 清空知识库", use_container_width=True):
-            with st.spinner("正在清空..."):
-                try:
-                    result = api_client.clear_knowledge_base()
-                    if result["status"] == "success":
-                        st.success(result["message"])
-                        st.rerun()
-                    else:
-                        st.error(result["message"])
-                except Exception as e:
-                    st.error(f"清空失败: {e}")
+        # 用户体验：添加确认对话框
+        if "show_clear_confirm" not in st.session_state:
+            st.session_state.show_clear_confirm = False
+        
+        if st.session_state.show_clear_confirm:
+            st.warning("⚠️ 确定要清空知识库吗？此操作不可恢复！")
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("✅ 确认清空", type="primary", use_container_width=True):
+                    with st.spinner("正在清空..."):
+                        try:
+                            result = api_client.clear_knowledge_base()
+                            if result["status"] == "success":
+                                st.success(result["message"])
+                                st.session_state.show_clear_confirm = False
+                                st.rerun()
+                            else:
+                                st.error(result["message"])
+                        except Exception as e:
+                            st.error(f"清空失败: {e}")
+            with col_no:
+                if st.button("❌ 取消", use_container_width=True):
+                    st.session_state.show_clear_confirm = False
+                    st.rerun()
+        else:
+            if st.button("🗑️ 清空知识库", use_container_width=True):
+                st.session_state.show_clear_confirm = True
+                st.rerun()
 
     with col3:
         if st.button("🔁 刷新页面", use_container_width=True):

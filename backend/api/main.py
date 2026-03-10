@@ -15,11 +15,13 @@ logger = get_logger(__name__)
 
 
 class RateLimiter:
-    """简单的内存限流器"""
+    """简单的内存限流器（优化版）"""
     
-    def __init__(self):
+    def __init__(self, cleanup_threshold: int = 1000):
         self._requests = defaultdict(list)
         self._lock = threading.Lock()
+        self._cleanup_counter = 0
+        self._cleanup_threshold = cleanup_threshold  # 每N次请求清理一次
     
     def is_allowed(self, client_id: str, max_requests: int, window_seconds: int) -> bool:
         """检查请求是否允许
@@ -48,7 +50,23 @@ class RateLimiter:
             
             # 记录新请求
             self._requests[client_id].append(now)
+            
+            # 定期清理非活跃客户端（防止内存泄漏）
+            self._cleanup_counter += 1
+            if self._cleanup_counter >= self._cleanup_threshold:
+                self._cleanup_inactive_clients(window_start)
+                self._cleanup_counter = 0
+            
             return True
+    
+    def _cleanup_inactive_clients(self, window_start: datetime):
+        """清理非活跃客户端"""
+        inactive = [
+            client for client, times in self._requests.items()
+            if not times or all(t <= window_start for t in times)
+        ]
+        for client in inactive:
+            del self._requests[client]
     
     def get_remaining(self, client_id: str, max_requests: int, window_seconds: int) -> int:
         """获取剩余请求数"""
@@ -143,13 +161,13 @@ cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
 is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
 
 if is_production:
-    # 生产环境：严格要求配置，不使用通配符
+    # 生产环境：严格要求配置
     if cors_env and cors_env != "*":
         cors_origins = [origin.strip() for origin in cors_env.split(",") if origin.strip()]
     else:
-        # 未配置时只允许本应用域名（防止意外开放）
-        cors_origins = []
-        logger.warning("生产环境未配置CORS_ALLOWED_ORIGINS，已禁用跨域请求！")
+        # 未配置时默认允许本地服务（避免完全无法访问）
+        cors_origins = ["http://localhost", "http://127.0.0.1"]
+        logger.warning("生产环境未配置CORS_ALLOWED_ORIGINS，默认仅允许本机访问")
 else:
     # 开发环境：灵活配置
     if cors_env:
@@ -167,6 +185,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 安全响应头中间件
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    # 防止内容类型被猜测
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # 防止点击劫持
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    # XSS 保护
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # 引用策略
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 # ============================================================================

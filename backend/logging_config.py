@@ -3,9 +3,72 @@
 import logging
 import re
 import sys
+import json
+import uuid
+import traceback
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Optional, Any, Dict
+from contextvars import ContextVar
+
+# 请求追踪ID上下文变量
+_request_id: ContextVar[Optional[str]] = ContextVar('request_id', default=None)
+
+
+def get_request_id() -> str:
+    """获取当前请求ID，如果没有则生成一个新的"""
+    rid = _request_id.get()
+    if rid is None:
+        rid = str(uuid.uuid4())[:8]  # 8位短ID
+        _request_id.set(rid)
+    return rid
+
+
+def set_request_id(rid: str) -> None:
+    """设置当前请求ID"""
+    _request_id.set(rid)
+
+
+def clear_request_id() -> None:
+    """清除当前请求ID"""
+    _request_id.set(None)
+
+
+class RequestIdFilter(logging.Filter):
+    """请求ID过滤器 - 为每条日志添加请求追踪ID"""
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 如果没有请求ID，生成一个
+        if not hasattr(record, 'request_id'):
+            record.request_id = get_request_id()
+        return True
+
+
+class StructuredLogFormatter(logging.Formatter):
+    """结构化JSON日志格式化器 - 便于日志分析"""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        # 构建结构化日志数据
+        log_data = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "request_id": getattr(record, 'request_id', 'N/A'),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno
+        }
+        
+        # 添加异常信息
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        
+        # 添加额外字段
+        if hasattr(record, 'extra_data'):
+            log_data["extra"] = record.extra_data
+        
+        return json.dumps(log_data, ensure_ascii=False)
 
 
 class SensitiveDataFormatter(logging.Formatter):
@@ -49,7 +112,8 @@ class SensitiveDataFormatter(logging.Formatter):
 def setup_logging(
     log_level: str = "INFO",
     log_file: Optional[str] = None,
-    log_format: Optional[str] = None
+    log_format: Optional[str] = None,
+    use_structured: bool = False
 ) -> logging.Logger:
     """
     统一日志配置
@@ -58,6 +122,7 @@ def setup_logging(
         log_level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: 日志文件路径，如果为None则只输出到控制台
         log_format: 自定义日志格式
+        use_structured: 是否使用结构化JSON日志格式
     
     Returns:
         配置好的logger对象
@@ -73,13 +138,20 @@ def setup_logging(
     # 清除已有的处理器
     logger.handlers.clear()
     
-    # 创建格式化器（使用脱敏版本）
-    formatter = SensitiveDataFormatter(log_format)
+    # 创建格式化器
+    if use_structured:
+        formatter = StructuredLogFormatter()
+    else:
+        formatter = SensitiveDataFormatter(log_format)
+    
+    # 添加请求ID过滤器
+    request_filter = RequestIdFilter()
     
     # 控制台处理器
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(request_filter)
     logger.addHandler(console_handler)
     
     # 文件处理器（如果指定了日志文件）

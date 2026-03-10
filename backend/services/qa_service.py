@@ -1,8 +1,10 @@
 """问答服务模块 - 优化版，增加问题类型识别和统计"""
 
 import time
+import hashlib
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
+from collections import OrderedDict
 
 from rag.engine import RAGEngine
 from backend.services.security_service import SecurityService, CheckResult
@@ -22,11 +24,21 @@ from backend.statistics import get_stats_instance
 logger = get_logger(__name__)
 
 
+# 查询分析缓存（安全检查+问题类型检测结果）
+_query_analysis_cache: OrderedDict = OrderedDict()
+_QUERY_CACHE_MAX_SIZE = 100  # 最多缓存100个查询结果
+
+
 @dataclass
 class QARequest:
     """问答请求"""
     question: str
     chat_history: Optional[List[Dict[str, str]]] = None
+    
+    def __post_init__(self):
+        """验证并限制 chat_history 长度"""
+        if self.chat_history and len(self.chat_history) > 10:
+            self.chat_history = self.chat_history[-10:]
 
 
 @dataclass
@@ -82,6 +94,37 @@ class QAService:
         """
         return self.security_service.is_emergency_symptom(question)
 
+    def _get_query_analysis_cache(self, question: str) -> Optional[Dict]:
+        """获取查询分析缓存
+        
+        Args:
+            question: 用户问题
+            
+        Returns:
+            缓存的查询分析结果（安全检查+问题类型），None表示未命中
+        """
+        cache_key = hashlib.md5(question.encode('utf-8')).hexdigest()
+        return _query_analysis_cache.get(cache_key)
+
+    def _set_query_analysis_cache(self, question: str, question_type: str, is_safe: bool, is_emergency: bool):
+        """设置查询分析缓存
+        
+        Args:
+            question: 用户问题
+            question_type: 问题类型
+            is_safe: 是否安全
+            is_emergency: 是否紧急
+        """
+        cache_key = hashlib.md5(question.encode('utf-8')).hexdigest()
+        _query_analysis_cache[cache_key] = {
+            "question_type": question_type,
+            "is_safe": is_safe,
+            "is_emergency": is_emergency
+        }
+        # LRU淘汰
+        if len(_query_analysis_cache) > _QUERY_CACHE_MAX_SIZE:
+            _query_analysis_cache.popitem(last=False)
+
     def ask(self, request: QARequest) -> QAResponse:
         """处理问答请求 - 优化版
         
@@ -93,9 +136,41 @@ class QAService:
         5. 计算置信度
         6. 生成回答
         """
-        # 0. 检测问题类型
-        question_type = self.question_type_detector.detect(request.question)
-        logger.info(f"问题类型: {question_type or '通用'}, 问题: {request.question[:30]}...")
+        # 0. 尝试从缓存获取查询分析结果
+        cached = self._get_query_analysis_cache(request.question)
+        
+        if cached:
+            # 使用缓存的问题类型
+            question_type = cached["question_type"]
+            logger.info(f"使用缓存的问题类型: {question_type or '通用'}, 问题: {request.question[:30]}...")
+            
+            # 如果缓存标记为不安全，直接返回警告
+            if not cached["is_safe"]:
+                check_result = self._check_safety(request.question)
+                return QAResponse(
+                    answer=check_result.warning_message if check_result else "内容不安全",
+                    sources=[],
+                    disclaimer=DISCLAIMER_TEXT,
+                    is_safe=False,
+                    question_type=question_type
+                )
+            
+            # 如果缓存标记为紧急，直接返回警告
+            if cached["is_emergency"]:
+                logger.warning(f"检测到紧急症状(缓存): {request.question[:30]}...")
+                return QAResponse(
+                    answer=self.security_service.get_emergency_message(),
+                    sources=[],
+                    disclaimer=DISCLAIMER_TEXT,
+                    is_safe=True,
+                    is_emergency=True,
+                    emergency_warning=self.security_service.get_emergency_message(),
+                    question_type=question_type
+                )
+        else:
+            # 0. 检测问题类型
+            question_type = self.question_type_detector.detect(request.question)
+            logger.info(f"问题类型: {question_type or '通用'}, 问题: {request.question[:30]}...")
 
         # 1. 敏感词检查
         check_result = self._check_safety(request.question)
@@ -111,6 +186,9 @@ class QAService:
         # 2. 紧急症状检查
         if self._check_emergency(request.question):
             logger.warning(f"检测到紧急症状: {request.question[:30]}...")
+            # 缓存紧急状态
+            if not cached:
+                self._set_query_analysis_cache(request.question, question_type, True, True)
             return QAResponse(
                 answer=self.security_service.get_emergency_message(),
                 sources=[],
@@ -120,6 +198,10 @@ class QAService:
                 emergency_warning=self.security_service.get_emergency_message(),
                 question_type=question_type
             )
+
+        # 缓存安全的查询分析结果
+        if not cached:
+            self._set_query_analysis_cache(request.question, question_type, True, False)
 
         # 3. 检查知识库是否就绪
         if not self.rag_engine.is_ready():

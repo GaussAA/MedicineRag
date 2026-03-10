@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import threading
+import time
 from pathlib import Path
 from functools import lru_cache
 from collections import OrderedDict
@@ -33,6 +34,34 @@ from rag.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 
 # 配置日志
 logger = get_logger(__name__)
+
+
+def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0):
+    """Retry decorator with exponential backoff
+    
+    Args:
+        max_retries: Maximum retry attempts
+        initial_delay: Initial delay in seconds
+        backoff_factor: Backoff multiplier
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        logger.warning(f"{func.__name__} failed (attempt {attempt + 1}/{max_retries}), retrying in {delay}s: {e}")
+                        time.sleep(delay)
+                        delay *= backoff_factor
+                    else:
+                        logger.error(f"{func.__name__} failed after max retries: {e}")
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class EmbeddingCache:
@@ -130,6 +159,102 @@ class EmbeddingCache:
         self.misses = 0
 
 
+class LLMResponseCache:
+    """LLM响应缓存 - 基于问题+检索结果哈希的响应缓存"""
+    
+    # 类级别的缓存配置
+    _enabled = False
+    _max_size = 50
+    
+    def __init__(self, max_size: int = 50):
+        """初始化LLM响应缓存
+        
+        Args:
+            max_size: 最大缓存条目数
+        """
+        self.cache: OrderedDict = OrderedDict()
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
+        self._lock = threading.Lock()
+    
+    @classmethod
+    def set_enabled(cls, enabled: bool, max_size: int = 50):
+        """设置全局缓存配置"""
+        cls._enabled = enabled
+        cls._max_size = max_size
+    
+    def _generate_cache_key(self, query: str, retrieved_docs: List[Any], question_type: str = None) -> str:
+        """生成缓存键
+        
+        缓存键 = 问题哈希 + 检索结果数量 + 前3个文档的哈希
+        """
+        # 问题哈希
+        query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()[:16]
+        
+        # 文档数量
+        doc_count = len(retrieved_docs)
+        
+        # 前3个文档的内容哈希（用于区分不同检索结果）
+        doc_hashes = []
+        for doc in retrieved_docs[:3]:
+            doc_text = doc.get('text', '')[:500]  # 取前500字符
+            doc_hash = hashlib.sha256(doc_text.encode('utf-8')).hexdigest()[:8]
+            doc_hashes.append(doc_hash)
+        
+        # 问题类型（如果有）
+        type_suffix = f"_{question_type}" if question_type else ""
+        
+        return f"{query_hash}_{doc_count}_{'_'.join(doc_hashes)}{type_suffix}"
+
+    def get(self, query: str, retrieved_docs: List[Any], question_type: str = None) -> Optional[str]:
+        """获取缓存的LLM响应"""
+        if not LLMResponseCache._enabled:
+            return None
+            
+        cache_key = self._generate_cache_key(query, retrieved_docs, question_type)
+        
+        with self._lock:
+            if cache_key in self.cache:
+                self.hits += 1
+                self.cache.move_to_end(cache_key)
+                logger.debug(f"LLM响应缓存命中: {cache_key[:30]}...")
+                return self.cache[cache_key]
+            self.misses += 1
+            return None
+
+    def put(self, query: str, retrieved_docs: List[Any], response: str, question_type: str = None):
+        """缓存LLM响应"""
+        if not LLMResponseCache._enabled:
+            return
+            
+        cache_key = self._generate_cache_key(query, retrieved_docs, question_type)
+        
+        with self._lock:
+            if cache_key in self.cache:
+                self.cache.move_to_end(cache_key)
+            self.cache[cache_key] = response
+            if len(self.cache) > self.max_size:
+                self.cache.popitem(last=False)
+
+    def get_stats(self) -> Dict[str, Any]:
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self.hits, 
+            "misses": self.misses, 
+            "hit_rate": f"{hit_rate:.1f}%",
+            "cache_size": len(self.cache),
+            "max_size": self.max_size
+        }
+
+    def clear(self):
+        with self._lock:
+            self.cache.clear()
+            self.hits = 0
+            self.misses = 0
+
+
 class RAGEngine:
     """RAG引擎核心类 - 线程安全的单例模式"""
     
@@ -173,6 +298,9 @@ class RAGEngine:
             else:
                 self.embedding_cache = None
 
+            # 初始化LLM响应缓存（默认启用，最多缓存50条）
+            self.llm_response_cache = LLMResponseCache(max_size=50)
+
             # 初始化重排序器
             self.reranker = create_reranker(self.ollama_client)
 
@@ -184,19 +312,19 @@ class RAGEngine:
         """获取单例实例的显式方法"""
         return cls()
 
+    @retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
     def _get_embedding(self, text: str) -> List[float]:
-        """获取embedding（带缓存）"""
-        # 优化：使用完整SHA256哈希作为缓存键，减少碰撞概率
+        """Get embedding with caching and retry"""
         cache_key = hashlib.sha256(text.encode('utf-8')).hexdigest()
 
-        # 尝试从缓存获取
+        # Try to get from cache
         if self.embedding_cache:
             cached = self.embedding_cache.get(cache_key)
             if cached is not None:
-                logger.debug(f"Embedding缓存命中: {cache_key[:50]}...")
+                logger.debug(f"Embedding cache hit: {cache_key[:50]}...")
                 return cached
 
-        # 调用API获取
+        # Call API
         try:
             response = self.ollama_client.embeddings(
                 model=config.OLLAMA_EMBED_MODEL,
@@ -204,7 +332,7 @@ class RAGEngine:
             )
             embedding = response.embedding
 
-            # 存入缓存
+            # Store in cache
             if self.embedding_cache:
                 self.embedding_cache.put(cache_key, embedding)
 
@@ -225,6 +353,21 @@ class RAGEngine:
             if file_path_obj.suffix.lower() == '.txt':
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
+            elif file_path_obj.suffix.lower() == '.pdf':
+                # 优先使用 LlamaParse 解析 PDF（更高精度）
+                try:
+                    from llama_parse import LlamaParse
+                    parser = LlamaParse(result_type="text", API_KEY=config.LLAMAPARSE_API_KEY if hasattr(config, 'LLAMAPARSE_API_KEY') else None)
+                    documents = parser.load_data(file_path)
+                    content = "\n\n".join([doc.text for doc in documents])
+                    logger.info("使用 LlamaParse 解析 PDF")
+                except ImportError:
+                    # LlamaParse 未安装，回退到 SimpleDirectoryReader
+                    logger.info("LlamaParse 未安装，使用 SimpleDirectoryReader 解析 PDF")
+                    from llama_index.core import SimpleDirectoryReader
+                    reader = SimpleDirectoryReader(input_files=[file_path])
+                    documents = reader.load_data()
+                    content = "\n\n".join([doc.text for doc in documents])
             else:
                 # 其他文件类型使用SimpleDirectoryReader
                 from llama_index.core import SimpleDirectoryReader
@@ -253,13 +396,19 @@ class RAGEngine:
             # 获取collection
             collection = self._get_collection()
 
-            # 获取embedding并存储
+            # 批量添加文档（优化版）
+            BATCH_SIZE = 100  # 每批处理100条
+            batch_ids = []
+            batch_embeddings = []
+            batch_documents = []
+            batch_metadatas = []
+            
             for i, chunk_obj in enumerate(chunk_objects):
                 chunk_text = chunk_obj.text
                 if not chunk_text.strip():
                     continue
 
-                # 过滤超长文本块（超过配置长度可能导致embedding失败）
+                # 过滤超长文本块
                 if len(chunk_text) > config.CHUNK_MAX_LENGTH:
                     logger.warning(f"跳过超长文本块 {i}: {len(chunk_text)} 字符")
                     continue
@@ -279,20 +428,38 @@ class RAGEngine:
                     if chunk_obj.title:
                         metadata["title"] = chunk_obj.title
 
-                    collection.add(
-                        ids=[doc_id],
-                        embeddings=[embedding],
-                        documents=[chunk_text],
-                        metadatas=[metadata]
-                    )
+                    batch_ids.append(doc_id)
+                    batch_embeddings.append(embedding)
+                    batch_documents.append(chunk_text)
+                    batch_metadatas.append(metadata)
 
-                    # 每处理10个chunk打印一次进度
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"已处理 {i + 1}/{len(chunks)} 个块")
+                    # 达到批次大小时批量添加
+                    if len(batch_ids) >= BATCH_SIZE:
+                        collection.add(
+                            ids=batch_ids,
+                            embeddings=batch_embeddings,
+                            documents=batch_documents,
+                            metadatas=batch_metadatas
+                        )
+                        logger.info(f"批量添加 {len(batch_ids)} 个块到向量库")
+                        batch_ids = []
+                        batch_embeddings = []
+                        batch_documents = []
+                        batch_metadatas = []
 
                 except Exception as e:
-                    logger.warning(f"添加文档块 {i} 失败: {e}")
+                    logger.warning(f"处理文档块 {i} 失败: {e}")
                     continue
+
+            # 添加剩余的批次
+            if batch_ids:
+                collection.add(
+                    ids=batch_ids,
+                    embeddings=batch_embeddings,
+                    documents=batch_documents,
+                    metadatas=batch_metadatas
+                )
+                logger.info(f"批量添加最后 {len(batch_ids)} 个块到向量库")
 
             # 刷新embedding缓存到磁盘（确保新生成的embedding被持久化）
             if self.embedding_cache and hasattr(self.embedding_cache, '_save_to_disk'):
@@ -365,27 +532,23 @@ class RAGEngine:
             logger.error(f"检索失败: {type(e).__name__}: {e}", exc_info=True)
             raise VectorStoreError(f"检索文档失败: {str(e)}") from e
 
+    @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff_factor=2.0)
     def generate(self, query: str, retrieved_docs: List[Any], question_type: str = None) -> str:
-        """生成回答
+        """Generate answer with retry and caching"""
         
-        Args:
-            query: 用户问题
-            retrieved_docs: 检索到的文档列表
-            question_type: 问题类型 (symptom/disease/medication/examination)
-            
-        Returns:
-            LLM生成的回答
-            
-        Raises:
-            LLMException: LLM调用失败
-        """
         if not retrieved_docs:
-            return "抱歉，知识库中未找到相关信息。请先上传医疗文档到知识库。"
+            return "Sorry, no relevant information found in the knowledge base."
 
-        # 构建上下文
+        # 尝试从缓存获取
+        cached_response = self.llm_response_cache.get(query, retrieved_docs, question_type)
+        if cached_response:
+            logger.info("使用缓存的LLM响应")
+            return cached_response
+
+        # Build context
         context = "\n\n".join([doc['text'] for doc in retrieved_docs])
 
-        # 选择合适的prompt模板
+        # Select appropriate prompt template
         if question_type and question_type in ["symptom", "disease", "medication", "examination"]:
             from rag.prompts import QUESTION_TYPE_PROMPTS
             type_prompt = QUESTION_TYPE_PROMPTS.get(question_type, "")
@@ -393,13 +556,13 @@ class RAGEngine:
         else:
             context_prompt = context
 
-        # 构造完整prompt
+        # Construct full prompt
         full_prompt = f"{SYSTEM_PROMPT}\n\n{USER_PROMPT_TEMPLATE.format(context=context_prompt, question=query)}"
 
         try:
-            logger.debug("开始调用LLM生成回答...")
+            logger.debug("Starting LLM generation...")
             
-            # 调用LLM
+            # Call LLM with timeout
             response = self.ollama_client.chat(
                 model=config.OLLAMA_LLM_MODEL,
                 messages=[{'role': 'user', 'content': full_prompt}],
@@ -409,12 +572,20 @@ class RAGEngine:
                 }
             )
 
+            result = response.message.content
             logger.info("LLM生成完成")
-            return response.message.content
+            
+            # 缓存响应
+            self.llm_response_cache.put(query, retrieved_docs, result, question_type)
+            
+            return result
 
         except Exception as e:
             logger.error(f"LLM生成失败: {type(e).__name__}: {e}", exc_info=True)
-            raise LLMException(f"生成回答失败: {str(e)}") from e
+            
+            # 优雅降级：返回基于检索结果的 fallback 回答
+            fallback_answer = self._generate_fallback_answer(query, retrieved_docs)
+            return fallback_answer
 
     def generate_stream(self, query: str, retrieved_docs: List[Any], question_type: str = None, full_prompt: str = None):
         """流式生成回答
@@ -456,7 +627,7 @@ class RAGEngine:
         try:
             logger.debug("开始调用LLM流式生成...")
             
-            # 流式调用LLM
+            # Call LLM
             response = self.ollama_client.chat(
                 model=config.OLLAMA_LLM_MODEL,
                 messages=[{'role': 'user', 'content': prompt_to_use}],
@@ -553,9 +724,17 @@ class RAGEngine:
         return sources
 
     def _get_collection(self):
-        """获取collection"""
+        """获取collection（启用HNSW索引优化）"""
         try:
-            return self.db.get_or_create_collection(config.COLLECTION_NAME)
+            return self.db.get_or_create_collection(
+                name=config.COLLECTION_NAME,
+                metadata={
+                    "hnsw:space": "cosine",  # 使用余弦距离
+                    "hnsw:construction_ef": 200,  # 构建时的搜索宽度
+                    "hnsw:search_ef": 200,  # 查询时的搜索宽度
+                    "hnsw:M": 16  # 索引连接的邻居数
+                }
+            )
         except Exception as e:
             logger.error(f"获取collection失败: {e}")
             raise
@@ -586,11 +765,51 @@ class RAGEngine:
         except Exception as e:
             logger.warning(f"清空索引失败（可能不存在）: {e}")
 
+    def _generate_fallback_answer(self, query: str, retrieved_docs: List[Any]) -> str:
+        """生成 fallback 回答（当 LLM 失败时的优雅降级）
+        
+        Args:
+            query: 用户问题
+            retrieved_docs: 检索到的文档列表
+            
+        Returns:
+            基于检索结果的 fallback 回答
+        """
+        if not retrieved_docs:
+            return "抱歉，知识库中未找到相关信息。请先上传医疗文档到知识库。"
+        
+        # 构建参考来源列表
+        sources = []
+        for i, doc in enumerate(retrieved_docs[:3]):  # 最多使用3个来源
+            text = doc.get('text', '')[:200]
+            source = doc.get('metadata', {}).get('source', '未知来源')
+            sources.append(f"{i+1}. {text}... (来源: {source})")
+        
+        sources_text = "\n\n".join(sources)
+        
+        return f"""抱歉，AI生成回答失败。以下是检索到的相关资料，请参考：
+
+{sources_text}
+
+温馨提示：建议稍后重试，如果问题持续存在请联系管理员。"""
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
+        result = {}
+        
+        # Embedding缓存统计
         if self.embedding_cache:
-            return self.embedding_cache.get_stats()
-        return {"hits": 0, "misses": 0, "hit_rate": "N/A", "message": "缓存未启用"}
+            result["embedding_cache"] = self.embedding_cache.get_stats()
+        else:
+            result["embedding_cache"] = {"hits": 0, "misses": 0, "hit_rate": "N/A", "message": "缓存未启用"}
+        
+        # LLM响应缓存统计
+        if self.llm_response_cache:
+            result["llm_response_cache"] = self.llm_response_cache.get_stats()
+        else:
+            result["llm_response_cache"] = {"hits": 0, "misses": 0, "hit_rate": "N/A", "message": "缓存未启用"}
+        
+        return result
 
     @classmethod
     def reset(cls) -> None:

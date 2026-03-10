@@ -8,14 +8,21 @@
 """
 
 import re
+import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from collections import OrderedDict
 
 from backend.logging_config import get_logger
 from backend.config import config
 from backend.exceptions import DocumentParseError
 
 logger = get_logger(__name__)
+
+
+# 模块级别的文档分块缓存（避免重复分块相同文档）
+_doc_chunk_cache: OrderedDict = OrderedDict()
+_DOC_CACHE_MAX_SIZE = 20  # 最多缓存20个文档的分块结果
 
 
 @dataclass
@@ -160,6 +167,12 @@ class IntelligentChunker:
         if not text or not text.strip():
             return []
         
+        # 检查文档内容哈希缓存（避免重复分块相同文档）
+        content_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        if content_hash in _doc_chunk_cache:
+            logger.debug(f"文档分块缓存命中: {content_hash[:8]}...")
+            return _doc_chunk_cache[content_hash]
+        
         # 提取标题结构
         titles = self._extract_titles(text)
         logger.debug(f"提取到 {len(titles)} 个标题")
@@ -172,6 +185,12 @@ class IntelligentChunker:
         chunks = self._create_chunks(sentences, titles, file_path)
         
         logger.info(f"分块完成，得到 {len(chunks)} 个块")
+        
+        # 缓存分块结果（直接使用模块级变量，无需global声明）
+        _doc_chunk_cache[content_hash] = chunks
+        if len(_doc_chunk_cache) > _DOC_CACHE_MAX_SIZE:
+            _doc_chunk_cache.popitem(last=False)
+        
         return chunks
     
     def _extract_titles(self, text: str) -> List[Tuple[str, int]]:
@@ -222,11 +241,8 @@ class IntelligentChunker:
         return sentences
     
     def _is_medical_term(self, text: str) -> bool:
-        """检查文本是否包含医学术语"""
-        for term in self.MEDICAL_TERMS:
-            if term in text:
-                return True
-        return False
+        """检查文本是否包含医学术语（优化版）"""
+        return any(term in text for term in self.MEDICAL_TERMS)
     
     def _create_chunks(
         self,

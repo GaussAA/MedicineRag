@@ -1,5 +1,8 @@
 """问答API路由"""
 
+import json
+import time
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -98,8 +101,6 @@ async def stream_qa(request: StreamQARequest, qa_service: QAService = Depends(ge
         
         def generate():
             """生成器函数 - 改进版"""
-            import json
-            
             try:
                 # 发送开始标志
                 yield "data: {\"type\": \"start\"}\n\n"
@@ -117,17 +118,16 @@ async def stream_qa(request: StreamQARequest, qa_service: QAService = Depends(ge
                     logger.warning(f"预检索sources失败: {src_err}")
                 
                 # 发送心跳（保持连接）
-                import time
                 heartbeat_count = 0
                 
                 for chunk in qa_service.ask_stream(qa_request):
-                    # 转义换行符避免SSE解析问题
-                    escaped_chunk = chunk.replace('\n', '\\n')
+                    # 使用json.dumps正确转义所有特殊字符
+                    escaped_chunk = json.dumps(chunk, ensure_ascii=False)[1:-1]  # 去掉首尾引号
                     yield f"data: {{\"type\": \"content\", \"content\": \"{escaped_chunk}\"}}\n\n"
                     
-                    # 每30秒发送一次心跳
+                    # 心跳优化：每60秒发送一次（减少网络开销）
                     heartbeat_count += 1
-                    if heartbeat_count % 30 == 0:
+                    if heartbeat_count % 60 == 0:
                         yield "data: {\"type\": \"heartbeat\"}\n\n"
                 
                 # 发送完成标志

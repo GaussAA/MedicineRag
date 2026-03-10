@@ -70,7 +70,9 @@ class DocService:
         return file_hash
     
     def _get_existing_hashes(self) -> set:
-        """获取知识库中所有现有文件的哈希值集合"""
+        """获取知识库中所有现有文件的哈希值集合（使用缓存优化）"""
+        global _file_hash_cache
+        
         hashes = set()
         
         if not self.docs_dir.exists():
@@ -79,8 +81,14 @@ class DocService:
         for file_path in self.docs_dir.iterdir():
             if file_path.is_file():
                 try:
-                    file_hash = self._calculate_file_hash(str(file_path))
-                    hashes.add(file_hash)
+                    abs_path = str(file_path.resolve())
+                    # 优先使用缓存
+                    if abs_path in _file_hash_cache:
+                        hashes.add(_file_hash_cache[abs_path])
+                    else:
+                        # 不在缓存中才计算
+                        file_hash = self._calculate_file_hash(str(file_path))
+                        hashes.add(file_hash)
                 except Exception as e:
                     logger.warning(f"计算文件哈希失败 {file_path}: {e}")
         
@@ -239,6 +247,12 @@ class DocService:
 
             # 获取文件路径用于删除对应的向量
             file_path_str = str(file_path)
+            
+            # 清理 hash 缓存
+            abs_path = str(Path(file_path).resolve())
+            global _file_hash_cache
+            if abs_path in _file_hash_cache:
+                del _file_hash_cache[abs_path]
 
             # 删除文件
             file_path.unlink()

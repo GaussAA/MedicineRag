@@ -9,7 +9,7 @@
 | 层级         | 技术选型                  |
 | ------------ | ------------------------- |
 | 前端框架     | Streamlit 1.30+           |
-| RAG框架      | LlamaIndex 0.10+          |
+| RAG框架      | LlamaIndex 0.10+         |
 | 向量数据库   | ChromaDB 0.4+             |
 | LLM          | Ollama qwen3:8b           |
 | Embedding    | BGE-M3:latest             |
@@ -32,7 +32,7 @@ MedicineRag/
 ├── backend/               # 后端服务
 │   ├── config.py          # 配置管理（安全解析+限流配置）
 │   ├── exceptions.py       # 自定义异常类
-│   ├── logging_config.py  # 统一日志配置
+│   ├── logging_config.py  # 统一日志配置（请求ID追踪）
 │   ├── statistics.py       # 问答统计模块（异步批量写入）
 │   ├── api/                # FastAPI服务
 │   │   ├── main.py         # API入口（限流中间件+健康检查）
@@ -42,14 +42,14 @@ MedicineRag/
 │   │       ├── qa.py       # 问答API（依赖注入+流式输出）
 │   │       └── docs.py     # 文档管理API
 │   └── services/           # 服务层
-│       ├── qa_service.py           # 问答服务
-│       ├── doc_service.py         # 文档管理服务
+│       ├── qa_service.py           # 问答服务（含查询缓存）
+│       ├── doc_service.py         # 文档管理服务（含哈希缓存）
 │       ├── security_service.py    # 安全检查服务
 │       ├── question_type_detector.py  # 问题类型检测
 │       └── confidence_calculator.py   # 置信度计算
 ├── rag/                    # RAG核心引擎
-│   ├── engine.py           # RAG引擎实现（单例模式+缓存优化）
-│   ├── chunker.py          # 智能文档分块（增强解析）
+│   ├── engine.py           # RAG引擎实现（单例+LLM缓存+Embedding缓存）
+│   ├── chunker.py          # 智能文档分块（含分块缓存）
 │   ├── retriever.py        # 混合检索模块
 │   ├── reranker.py         # 重排序模块（两阶段检索）
 │   └── prompts.py          # Prompt模板
@@ -107,11 +107,11 @@ python scripts/start_all.py
 
 # 方式2：分别启动
 # 终端1：激活虚拟环境并运行Streamlit Web应用
-source .venv\Scripts\activate
+source .venv/Scripts/activate
 streamlit run app/main.py
 
 # 终端2：运行API服务
-.venv\Scripts\activate
+source .venv/Scripts/activate
 uvicorn backend.api.main:app --reload --port 8000
 
 # 方式3：一键关闭
@@ -176,6 +176,7 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
 - 智能分块、向量化存储
 - 重建索引、清空知识库功能
 - 文档列表、删除功能
+- 重复文件检测（基于内容哈希）
 
 ### 高级功能
 
@@ -212,16 +213,18 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
 - 问题类型分布分析
 - 性能指标监控（/metrics端点）
 - 知识库缺口识别（未回答问题追踪）
+- 请求ID日志追踪
 
 #### REST API
 - 完整的RESTful API接口
 - 支持文档上传、问答、统计等功能
 - 自动生成API文档（Swagger UI）
 
-#### Embedding缓存
-- LRU内存缓存 + 磁盘持久化
-- 使用SHA256哈希作为缓存键
-- 大幅减少重复Embedding计算
+#### 多层缓存机制
+- **Embedding缓存**：LRU内存缓存 + 磁盘持久化，使用SHA256哈希作为缓存键
+- **LLM响应缓存**：基于问题哈希的响应缓存，减少重复LLM调用
+- **文档分块缓存**：基于内容哈希的分块结果缓存
+- **查询分析缓存**：安全检查 + 问题类型检测结果缓存
 
 ---
 
@@ -296,6 +299,9 @@ RATE_LIMIT_QPS=10
 
 # CORS配置（生产环境建议限制）
 CORS_ALLOWED_ORIGINS=*
+
+# 重复检测配置
+ENABLE_DUPLICATE_CHECK=true
 ```
 
 ---
@@ -304,23 +310,23 @@ CORS_ALLOWED_ORIGINS=*
 
 ### API客户端 (app/api_client.py)
 
-前端通过API客户端与后端通信：
+前端通过API客户端与后端通信，含超时配置和Streamlit缓存：
 
 ```python
 class APIClient:
+    DEFAULT_TIMEOUT = 30
+    STREAM_TIMEOUT = 300
+    UPLOAD_TIMEOUT = 600
+    
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
         self.session = requests.Session()
+        # 连接池配置...
     
-    def ask_stream(self, question: str, history: List[Dict] = None):
-        """流式问答"""
-        url = f"{self.base_url}/api/qa/stream"
-        # 处理SSE流式响应
-        ...
-    
-    def upload_document_from_uploaded(self, file, filename):
-        """上传文档"""
-        ...
+    @st.cache_resource
+    def get_api_client() -> APIClient:
+        """获取API客户端单例（使用Streamlit缓存）"""
+        return APIClient()
 ```
 
 ### RAG引擎 (rag/engine.py)
@@ -402,22 +408,34 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 
 ### 已完成的优化
 
+#### 后端优化
 1. **统计模块异步写入**：后台定时刷新，避免频繁I/O
 2. **Embedding缓存优化**：LRU内存缓存 + 磁盘持久化，使用SHA256哈希作为缓存键
 3. **API依赖注入**：移除全局单例，使用FastAPI依赖注入
 4. **敏感词库扩展**：200+敏感词，分类管理
 5. **关键词检索优化**：添加预过滤，减少全表扫描
-6. **前端错误边界**：友好的错误提示
-7. **配置安全解析**：无效值自动降级
-8. **RAG引擎单例**：避免重复初始化
-9. **SSE流式输出**：JSON格式+心跳+错误处理
-10. **多轮对话优化**：历史长度控制
-11. **API限流机制**：保护后端服务
-12. **日志脱敏**：敏感信息保护
-13. **两阶段检索**：初始召回 + 重排序，提升检索精度
-14. **问题类型检测**：自动识别问题类型
-15. **置信度计算**：低置信度警告
-16. **前后端分离**：通过HTTP API通信
+6. **RAG引擎单例**：避免重复初始化
+7. **SSE流式输出**：JSON格式+心跳+错误处理
+8. **多轮对话优化**：历史长度控制
+9. **API限流机制**：保护后端服务
+10. **两阶段检索**：初始召回 + 重排序，提升检索精度
+11. **问题类型检测**：自动识别问题类型
+12. **置信度计算**：低置信度警告
+13. **LLM响应缓存**：基于问题哈希的响应缓存
+14. **文档分块缓存**：基于内容哈希的分块结果缓存
+15. **查询分析缓存**：安全检查+问题类型检测结果缓存
+16. **日志请求ID追踪**：基于ContextVar的请求级别日志
+17. **降级处理**：LLM失败时返回检索到的资料
+18. **哈希缓存优化**：文档哈希增量计算，避免重复读取
+19. **移除重复导入**：将import语句移至文件顶部
+
+#### 前端优化
+1. **API客户端超时配置**：类常量统一管理超时参数
+2. **Streamlit缓存**：@st.cache_resource缓存API客户端
+3. **Stats缓存**：session_state缓存统计数据，30秒过期
+4. **阻塞sleep替换**：手动刷新按钮替代time.sleep阻塞
+5. **Bug修复**：sources变量初始化、建议按钮功能修复
+6. **UX改进**：确认对话框、输入长度限制、成功提示
 
 ---
 
@@ -455,3 +473,8 @@ pytest tests/ --cov=backend --cov=rag --cov=app
   - 添加Embedding缓存（LRU + 磁盘持久化）
   - 扩展测试覆盖至119个测试
   - 添加项目文档（需求规格 + 技术设计）
+- v0.1.4 - 全面优化版本
+  - 前端优化：超时配置、Stats缓存、阻塞sleep替换、Bug修复、UX改进
+  - 后端优化：LLM响应缓存、文档分块缓存、查询分析缓存
+  - 日志优化：请求ID追踪、降级处理
+  - 代码优化：哈希缓存优化、移除重复导入
