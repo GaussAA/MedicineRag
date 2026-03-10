@@ -37,6 +37,13 @@ def init_session_state():
         st.session_state._stats_cache = {"data": None, "timestamp": 0}
     if "_stats_cache_timeout" not in st.session_state:
         st.session_state._stats_cache_timeout = 30  # 30秒
+    
+    # Agent 模式相关状态
+    if "agent_mode" not in st.session_state:
+        st.session_state.agent_mode = False  # 默认使用普通 RAG 模式
+    if "session_id" not in st.session_state:
+        import uuid
+        st.session_state.session_id = str(uuid.uuid4())
 
 
 def show_sidebar():
@@ -46,6 +53,31 @@ def show_sidebar():
     
     with st.sidebar:
         st.title("📚 知识库管理")
+        
+        # Agent 模式选择
+        st.subheader("🤖 问答模式")
+        agent_mode = st.toggle(
+            "启用 Agent 模式",
+            value=st.session_state.agent_mode,
+            help="Agent 模式支持多步骤推理、主动追问和知识缺口识别"
+        )
+        
+        if agent_mode != st.session_state.agent_mode:
+            st.session_state.agent_mode = agent_mode
+            st.rerun()
+        
+        if st.session_state.agent_mode:
+            st.success("🤖 Agent 模式已启用")
+            st.caption("支持：智能推理 | 主动追问 | 知识缺口识别")
+            
+            # Agent 高级配置
+            with st.expander("⚙️ Agent 配置"):
+                enable_followup = st.checkbox("启用主动追问", value=True)
+                enable_knowledge_gap = st.checkbox("启用知识缺口识别", value=True)
+        else:
+            st.info("💬 使用标准 RAG 模式")
+
+        st.divider()
 
         # 性能优化：使用缓存的stats，避免重复请求
         current_time = time.time()
@@ -169,7 +201,15 @@ def main():
 
         # 页面标题
         st.title("🏥 医疗知识问答系统")
-        st.markdown("### 基于RAG技术的医疗健康咨询")
+        
+        # 显示当前模式
+        if st.session_state.agent_mode:
+            st.markdown("### 🤖 Agent 模式")
+            st.caption("智能推理 | 主动追问 | 知识缺口识别")
+        else:
+            st.markdown("### 💬 标准 RAG 模式")
+        
+        st.markdown("---")
 
         # 侧边栏
         show_sidebar()
@@ -231,7 +271,7 @@ def main():
         
         # 聊天输入（限制500字符）
         input_placeholder = "请输入您的医疗问题... (最多500字)"
-        if prompt := st.chat_input(input_placeholder, max_chars=500):
+        if prompt := st.chat_message("user").chat_input(input_placeholder, max_chars=500):
             # 用户消息
             st.chat_message("user").markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -245,26 +285,70 @@ def main():
                 # 使用流式API
                 with st.spinner("正在思考..."):
                     sources = []  # Bug修复：先初始化，避免异常时未定义
+                    followup_questions = []
+                    knowledge_gaps = []
+                    confidence = 0.0
+                    
                     try:
-                        # 获取流式响应（传递对话历史）
-                        stream_generator = api_client.ask_stream(
-                            question=prompt,
-                            history=st.session_state.history
-                        )
+                        if st.session_state.agent_mode:
+                            # Agent 模式
+                            stream_generator = api_client.ask_agent_stream(
+                                question=prompt,
+                                history=st.session_state.history,
+                                session_id=st.session_state.session_id,
+                                enable_followup=True,
+                                enable_knowledge_gap=True
+                            )
+                        else:
+                            # 标准 RAG 模式
+                            stream_generator = api_client.ask_stream(
+                                question=prompt,
+                                history=st.session_state.history
+                            )
 
                         # 流式显示
                         for chunk in stream_generator:
-                            # 检查是否是sources数据（特殊标记）
+                            # 检查是否是特殊数据（Agent 模式）
                             if chunk.startswith("__SOURCE__: "):
                                 import json
                                 source_data = json.loads(chunk[12:])
                                 sources.append(source_data)
+                            elif chunk.startswith("__FOLLOWUP__: "):
+                                import json
+                                followup_questions = json.loads(chunk[13:])
+                            elif chunk.startswith("__KNOWLEDGE_GAPS__: "):
+                                import json
+                                knowledge_gaps = json.loads(chunk[18:])
+                            elif chunk.startswith("__CONFIDENCE__: "):
+                                confidence = float(chunk[16:])
+                            elif chunk.startswith("__STEPS__: "):
+                                # Agent 推理步骤，仅记录不显示
+                                pass
                             elif chunk.strip():
-                                # 非source数据直接显示
+                                # 非特殊数据直接显示
                                 full_response += chunk
                                 response_container.markdown(full_response)
+                        
+                        # 流式完成后显示额外信息
+                        if st.session_state.agent_mode:
+                            # 显示追问建议
+                            if followup_questions:
+                                with st.expander("💭 可能感兴趣的问题"):
+                                    for q in followup_questions:
+                                        st.markdown(f"- {q}")
                             
-                        # 流式完成后显示参考来源
+                            # 显示知识缺口
+                            if knowledge_gaps:
+                                with st.expander("📚 知识缺口提示"):
+                                    for gap in knowledge_gaps:
+                                        st.markdown(f"- {gap}")
+                            
+                            # 显示置信度
+                            if confidence > 0:
+                                conf_color = "🟢" if confidence >= 0.7 else ("🟡" if confidence >= 0.5 else "🔴")
+                                st.caption(f"{conf_color} 置信度: {confidence:.1%}")
+                        
+                        # 显示参考来源
                         if sources:
                             with st.expander("📄 参考来源"):
                                 for idx, src in enumerate(sources, 1):

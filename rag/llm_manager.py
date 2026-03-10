@@ -106,9 +106,9 @@ class LLMManager:
 
         # 尝试从缓存获取
         if use_cache:
-            # 构造虚拟的retrieved_docs用于缓存键生成
-            mock_docs = [{"text": context[:500]}]
-            cached_response = self._cache.get(query, mock_docs, question_type)
+            # 构造缓存键
+            cache_key = self._cache.generate_cache_key(query, [{"text": context[:500]}], question_type)
+            cached_response = self._cache.get(cache_key)
             if cached_response:
                 logger.info("使用缓存的LLM响应")
                 return cached_response
@@ -129,7 +129,8 @@ class LLMManager:
 
             # 缓存响应
             if use_cache:
-                self._cache.put(query, [{"text": context[:500]}], result, question_type)
+                cache_key = self._cache.generate_cache_key(query, [{"text": context[:500]}], question_type)
+                self._cache.put(cache_key, result)
 
             return result
 

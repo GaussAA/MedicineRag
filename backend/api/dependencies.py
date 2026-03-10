@@ -10,9 +10,12 @@ from typing import Generator
 from fastapi import Depends
 
 from rag.core.engine import RAGEngine
+from rag.agents.medical_agent import MedicalAgent, AgentConfig, create_medical_agent
 from backend.services.qa_service import QAService
 from backend.services.doc_service import DocService
 from backend.services.security_service import SecurityService
+from backend.services.question_type_detector import QuestionTypeDetector
+from backend.services.confidence_calculator import ConfidenceCalculator
 from backend.statistics import QAStats, get_stats_instance
 from backend.logging_config import get_logger
 from backend.config import Config
@@ -168,6 +171,77 @@ def get_doc_service_dep(
     return DocService(rag_engine)
 
 
+# ============================================================================
+# Agent 依赖
+# ============================================================================
+
+@lru_cache()
+def get_question_type_detector() -> QuestionTypeDetector:
+    """获取问题类型检测器实例（单例）
+    
+    Returns:
+        QuestionTypeDetector: 问题类型检测器实例
+    """
+    return QuestionTypeDetector()
+
+
+@lru_cache()
+def get_confidence_calculator() -> ConfidenceCalculator:
+    """获取置信度计算器实例（单例）
+    
+    Returns:
+        ConfidenceCalculator: 置信度计算器实例
+    """
+    return ConfidenceCalculator()
+
+
+@lru_cache()
+def get_medical_agent() -> MedicalAgent:
+    """获取医疗问答 Agent 实例（单例）
+    
+    Returns:
+        MedicalAgent: 医疗问答 Agent 实例
+    """
+    rag_engine = get_rag_engine()
+    security_service = get_security_service()
+    question_type_detector = get_question_type_detector()
+    confidence_calculator = get_confidence_calculator()
+    
+    config = AgentConfig(
+        max_steps=10,
+        temperature=0.2,
+        timeout=300,
+        enable_reflection=True,
+        enable_followup=True,
+        enable_knowledge_gap=True,
+        min_confidence_threshold=0.5
+    )
+    
+    return create_medical_agent(
+        rag_engine=rag_engine,
+        security_service=security_service,
+        question_type_detector=question_type_detector,
+        confidence_calculator=confidence_calculator,
+        config=config
+    )
+
+
+def get_medical_agent_dep(
+    rag_engine: RAGEngine = Depends(get_rag_engine_dep),
+    security_service: SecurityService = Depends(get_security_service_dep)
+) -> MedicalAgent:
+    """FastAPI依赖兼容的 Medical Agent 获取函数
+    
+    Args:
+        rag_engine: RAG引擎实例
+        security_service: 安全服务实例
+        
+    Returns:
+        MedicalAgent: 医疗问答 Agent 实例
+    """
+    return get_medical_agent()
+
+
 # 需要导入Depends以支持FastAPI依赖注入
 __all__ = [
     "get_rag_engine",
@@ -176,6 +250,9 @@ __all__ = [
     "get_doc_service",
     "get_stats",
     "get_config",
+    "get_question_type_detector",
+    "get_confidence_calculator",
+    "get_medical_agent",
     # FastAPI Depends兼容版本
     "get_rag_engine_dep",
     "get_security_service_dep",

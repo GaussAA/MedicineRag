@@ -147,6 +147,121 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
+    # ==================== Agent 问答 ====================
+    
+    def ask_agent_stream(
+        self, 
+        question: str, 
+        history: Optional[List[Dict[str, str]]] = None,
+        session_id: Optional[str] = None,
+        enable_followup: bool = True,
+        enable_knowledge_gap: bool = True
+    ) -> Generator[str, None, None]:
+        """流式 Agent 问答
+        
+        Args:
+            question: 用户问题
+            history: 对话历史
+            session_id: 会话ID
+            enable_followup: 是否启用追问
+            enable_knowledge_gap: 是否启用知识缺口识别
+            
+        Yields:
+            流式返回的回答片段
+        """
+        url = self._get_url("/api/qa/agent/stream")
+        payload = {
+            "question": question,
+            "history": history or [],
+            "session_id": session_id,
+            "enable_followup": enable_followup,
+            "enable_knowledge_gap": enable_knowledge_gap
+        }
+        
+        try:
+            response = self.session.request(
+                "POST", url, json=payload, 
+                timeout=self.STREAM_TIMEOUT,
+                stream=True
+            )
+            response.raise_for_status()
+                
+            buffer = ""
+            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                if chunk:
+                    buffer += chunk
+                    
+                    while '\n\n' in buffer:
+                        line, buffer = buffer.split('\n\n', 1)
+                        if line.startswith('data: '):
+                            data = line[6:]
+                            
+                            if data.startswith('{') and data.endswith('}'):
+                                try:
+                                    json_data = json.loads(data)
+                                    msg_type = json_data.get('type')
+                                    
+                                    if msg_type == 'error':
+                                        yield f"\n\n错误: {json_data.get('message', '未知错误')}"
+                                        return
+                                    elif msg_type == 'done':
+                                        return
+                                    elif msg_type == 'steps':
+                                        yield f"__STEPS__: {json.dumps(json_data.get('data', []))}"
+                                    elif msg_type == 'source':
+                                        yield f"__SOURCE__: {json.dumps(json_data.get('data', {}))}"
+                                    elif msg_type == 'followup':
+                                        yield f"__FOLLOWUP__: {json.dumps(json_data.get('data', []))}"
+                                    elif msg_type == 'knowledge_gaps':
+                                        yield f"__KNOWLEDGE_GAPS__: {json.dumps(json_data.get('data', []))}"
+                                    elif msg_type == 'confidence':
+                                        yield f"__CONFIDENCE__: {json_data.get('data')}"
+                                    elif msg_type == 'content' and json_data.get('content'):
+                                        yield json_data['content']
+                                except json.JSONDecodeError:
+                                    pass
+                            elif data and data != '[DONE]':
+                                yield data
+        except requests.exceptions.ConnectionError:
+            yield "无法连接到后端服务，请确保API服务正在运行。"
+        except requests.exceptions.Timeout:
+            yield "请求超时，请稍后重试。"
+        except Exception as e:
+            yield f"发生错误: {str(e)}"
+    
+    def ask_agent(
+        self, 
+        question: str, 
+        history: Optional[List[Dict[str, str]]] = None,
+        session_id: Optional[str] = None,
+        enable_followup: bool = True,
+        enable_knowledge_gap: bool = True
+    ) -> Dict[str, Any]:
+        """非流式 Agent 问答
+        
+        Args:
+            question: 用户问题
+            history: 对话历史
+            session_id: 会话ID
+            enable_followup: 是否启用追问
+            enable_knowledge_gap: 是否启用知识缺口识别
+            
+        Returns:
+            Agent 问答响应字典
+        """
+        url = self._get_url("/api/qa/agent")
+        payload = {
+            "question": question,
+            "history": history or [],
+            "session_id": session_id,
+            "enable_followup": enable_followup,
+            "enable_knowledge_gap": enable_knowledge_gap
+        }
+        
+        response = self.session.post(url, json=payload, timeout=self.STREAM_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    
     # ==================== 文档相关 ====================
     
     def upload_document(self, file_path: str, file_name: str = None) -> Dict[str, Any]:
