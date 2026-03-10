@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from rag.engine import RAGEngine
+from rag.core.engine import RAGEngine
 from backend.config import config
 from backend.logging_config import get_logger
 from backend.exceptions import (

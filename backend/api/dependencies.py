@@ -9,7 +9,7 @@ from typing import Generator
 
 from fastapi import Depends
 
-from rag.engine import RAGEngine
+from rag.core.engine import RAGEngine
 from backend.services.qa_service import QAService
 from backend.services.doc_service import DocService
 from backend.services.security_service import SecurityService

@@ -6,7 +6,7 @@ import time
 from typing import List, Optional, Dict
 from dataclasses import dataclass, field
 
-from rag.prompts import SENSITIVE_WARNING_MESSAGES
+from rag.core.prompts import SENSITIVE_WARNING_MESSAGES
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)

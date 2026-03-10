@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from collections import OrderedDict
 
-from rag.engine import RAGEngine
+from rag.core.engine import RAGEngine
 from backend.services.security_service import SecurityService, CheckResult
 from backend.services.question_type_detector import QuestionTypeDetector, get_question_type_detector
 from backend.services.confidence_calculator import ConfidenceCalculator, get_confidence_calculator
@@ -17,7 +17,7 @@ from backend.exceptions import (
     KnowledgeBaseEmptyError,
     NoRelevantDocumentsError,
 )
-from rag.prompts import DISCLAIMER_TEXT
+from rag.core.prompts import DISCLAIMER_TEXT
 from backend.config import config
 from backend.statistics import get_stats_instance
 

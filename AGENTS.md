@@ -30,48 +30,86 @@ MedicineRag/
 │   └── pages/
 │       ├── knowledge.py    # 知识库管理页面
 │       └── analytics.py    # 系统统计页面
+│
 ├── backend/               # 后端服务
 │   ├── config.py          # 配置管理（安全解析+限流配置）
-│   ├── exceptions.py       # 自定义异常类
-│   ├── logging_config.py  # 统一日志配置（请求ID追踪）
-│   ├── statistics.py       # 问答统计模块（异步批量写入）
-│   ├── api/                # FastAPI服务
-│   │   ├── main.py         # API入口（限流中间件+健康检查）
-│   │   ├── models.py       # 数据模型
+│   ├── exceptions.py      # 自定义异常类
+│   ├── logging_config.py # 统一日志配置（请求ID追踪）
+│   ├── statistics.py      # 问答统计模块（异步批量写入）
+│   ├── api/               # FastAPI服务
+│   │   ├── main.py        # API入口（限流中间件+健康检查）
+│   │   ├── models.py      # 数据模型
 │   │   ├── dependencies.py # 依赖注入
-│   │   └── routes/         # API路由
-│   │       ├── qa.py       # 问答API（依赖注入+流式输出）
-│   │       └── docs.py     # 文档管理API
-│   └── services/           # 服务层
+│   │   └── routes/        # API路由
+│   │       ├── qa.py      # 问答API（依赖注入+流式输出）
+│   │       └── docs.py    # 文档管理API
+│   └── services/          # 服务层
 │       ├── qa_service.py           # 问答服务（含查询缓存）
 │       ├── doc_service.py         # 文档管理服务（含哈希缓存）
 │       ├── security_service.py    # 安全检查服务
-│       ├── question_type_detector.py  # 问题类型检测
-│       └── confidence_calculator.py   # 置信度计算
-├── rag/                    # RAG核心引擎
-│   ├── engine.py           # RAG引擎实现（单例+LLM缓存+Embedding缓存）
-│   ├── chunker.py          # 智能文档分块（含分块缓存）
-│   ├── retriever.py        # 混合检索模块（含60+同义词扩展）
-│   ├── reranker.py         # 重排序模块（两阶段检索）
-│   └── prompts.py          # Prompt模板
-├── tests/                  # 单元测试（119个测试）
-├── scripts/                # 启动脚本
-│   ├── start_all.py        # 一键启动
-│   └── stop_all.py         # 一键关闭
-├── docs/                   # 项目文档
+│       ├── question_type_detector.py # 问题类型检测
+│       └── confidence_calculator.py # 置信度计算
+│
+├── rag/                   # RAG核心引擎（模块化结构）
+│   ├── __init__.py       # 包入口
+│   ├── cache.py           # 缓存模块
+│   ├── factory.py         # 组件工厂函数
+│   ├── llm_manager.py     # LLM调用管理
+│   ├── vector_store.py    # 向量存储管理
+│   ├── core/              # 核心模块子包
+│   │   ├── engine.py      # RAG引擎实现（Facade模式）
+│   │   ├── retriever.py   # 混合检索模块（含60+同义词扩展）
+│   │   ├── reranker.py    # 重排序模块（两阶段检索）
+│   │   └── prompts.py     # Prompt模板
+│   └── processing/        # 处理模块子包
+│       ├── chunker.py     # 智能文档分块（含分块缓存）
+│       └── document_processor.py # 文档处理
+│
+├── tests/                 # 测试目录（120个测试，分层结构）
+│   ├── conftest.py        # 共享fixtures
+│   ├── unit/              # 单元测试
+│   │   ├── test_config.py
+│   │   ├── test_exceptions.py
+│   │   ├── test_logging.py
+│   │   └── test_statistics.py
+│   ├── services/          # 服务层测试
+│   │   ├── test_security.py
+│   │   ├── test_question_type_detector.py
+│   │   └── test_confidence_calculator.py
+│   ├── rag/               # RAG核心测试
+│   │   ├── test_chunker.py
+│   │   ├── test_retriever.py
+│   │   ├── test_engine.py
+│   │   └── test_cache.py
+│   ├── api/               # API测试（待扩展）
+│   ├── integration/       # 集成测试（待扩展）
+│   ├── fixtures/          # 测试数据
+│   │   └── test_documents/
+│   └── scripts/           # 测试脚本
+│       ├── test_rag.py
+│       ├── test_rerank.py
+│       └── test_load.py
+│
+├── scripts/               # 启动脚本
+│   ├── start_all.py       # 一键启动
+│   └── stop_all.py        # 一键关闭
+│
+├── docs/                  # 项目文档
 │   ├── spec.md            # 需求规格文档
 │   └── technical-design.md # 技术方案设计
-├── data/                   # 数据目录
-│   ├── documents/          # 上传的源文档
-│   ├── chroma_db/          # Chroma向量数据库
-│   ├── embedding_cache/   # Embedding缓存
-│   └── qa_stats.json       # 问答统计文件
-├── storage/                # LlamaIndex存储（索引/图谱）
-├── .env                    # 环境配置
-├── pyproject.toml          # 项目配置
-├── test_rag.py            # RAG测试脚本
-├── test_rerank.py         # 重排序测试脚本
-└── test_load.py           # 文档加载测试脚本
+│
+├── data/                  # 数据目录
+│   ├── documents/         # 上传的源文档
+│   ├── chroma_db/         # Chroma向量数据库
+│   ├── embedding_cache/  # Embedding缓存
+│   ├── logs/              # 日志目录
+│   ├── storage/           # LlamaIndex存储
+│   └── qa_stats.json      # 问答统计文件
+│
+├── .env                   # 环境配置
+├── pyproject.toml         # 项目配置
+├── AGENTS.md              # Agent说明文档
+└── uv.lock                # 依赖锁定文件
 ```
 
 ---
@@ -125,6 +163,17 @@ python scripts/stop_all.py
 
 ## 架构特点
 
+### 模块化设计
+
+RAG核心采用Facade模式和依赖注入：
+
+- **rag/core/**: 核心算法（Engine, Retriever, Reranker, Prompts）
+- **rag/processing/**: 处理流程（Chunker, DocumentProcessor）
+- **rag/cache.py**: 统一缓存接口
+- **rag/factory.py**: 组件工厂函数
+- **rag/llm_manager.py**: LLM调用管理
+- **rag/vector_store.py**: 向量存储管理
+
 ### 前后端分离
 
 本系统采用前后端分离架构：
@@ -132,12 +181,6 @@ python scripts/stop_all.py
 - **前端**：Streamlit Web应用，通过HTTP API与后端通信
 - **后端**：FastAPI服务，提供RESTful API
 - **通信**：使用 `app/api_client.py` 统一封装API调用
-
-这种架构的优势：
-1. 前端后端独立开发、部署
-2. 支持多客户端（Web、移动端）
-3. 便于API复用和扩展
-4. 更好的可测试性
 
 ### 依赖注入
 
@@ -348,9 +391,9 @@ class APIClient:
         return APIClient()
 ```
 
-### RAG引擎 (rag/engine.py)
+### RAG引擎 (rag/core/engine.py)
 
-使用原生Ollama API避免HTTP代理连接池问题，采用单例模式，支持两阶段检索：
+使用原生Ollama API避免HTTP代理连接池问题，采用Facade模式和单例模式：
 
 ```python
 class RAGEngine:
@@ -362,7 +405,7 @@ class RAGEngine:
         return cls._instance
 ```
 
-### Embedding缓存 (rag/engine.py)
+### Embedding缓存 (rag/cache.py)
 
 LRU内存缓存 + 磁盘持久化，大幅减少重复计算：
 
@@ -375,7 +418,7 @@ class EmbeddingCache:
         ...
 ```
 
-### 智能分块器 (rag/chunker.py)
+### 智能分块器 (rag/processing/chunker.py)
 
 - 医学术语保护（300+术语）
 - 文档结构保留
@@ -390,6 +433,24 @@ class IntelligentChunker:
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 100):
         self._chunk_cache = OrderedDict()  # 类实例缓存
         ...
+```
+
+### 组件工厂 (rag/factory.py)
+
+提供创建RAG系统各组件的工厂函数：
+
+```python
+def create_chunker() -> IntelligentChunker:
+    """创建文档分块器"""
+    ...
+
+def create_retriever() -> HybridRetriever:
+    """创建检索器"""
+    ...
+
+def create_reranker() -> Reranker:
+    """创建重排序器"""
+    ...
 ```
 
 ### 置信度计算器 (backend/services/confidence_calculator.py)
@@ -427,17 +488,18 @@ class QAStats:
 ## 测试
 
 ```bash
-# 运行单元测试（119个测试）
+# 运行所有测试（120个测试）
 pytest tests/ -v
 
-# 运行RAG测试
-python test_rag.py
+# 运行特定目录的测试
+pytest tests/unit/ -v          # 单元测试
+pytest tests/services/ -v     # 服务层测试
+pytest tests/rag/ -v         # RAG核心测试
 
-# 运行重排序测试
-python test_rerank.py
-
-# 运行文档加载测试
-python test_load.py
+# 运行测试脚本
+python tests/scripts/test_rag.py
+python tests/scripts/test_rerank.py
+python tests/scripts/test_load.py
 
 # 查看测试覆盖率
 pytest tests/ --cov=backend --cov=rag --cov=app
@@ -445,16 +507,11 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 
 ### 测试覆盖
 
-- 配置模块测试
-- 异常类测试
-- 日志配置测试
-- 安全服务测试
-- 统计模块测试
-- 分块器测试
-- 检索器测试
-- RAG核心测试
-- 置信度计算器测试
-- 问题类型检测器测试
+- **单元测试** (tests/unit/): 配置、异常、日志、统计
+- **服务层测试** (tests/services/): 安全服务、问题类型检测、置信度计算
+- **RAG核心测试** (tests/rag/): 分块器、检索器、引擎、缓存
+- **API测试** (tests/api/): 待扩展
+- **集成测试** (tests/integration/): 待扩展
 
 ---
 
@@ -484,7 +541,7 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 19. **移除重复导入**：将import语句移至文件顶部
 20. **相似度阈值过滤**：实际应用SIMILARITY_THRESHOLD配置
 21. **同义词扩展**：60+组医学同义词词典
-22. **置信度计算修复**：修正相似度计算逻辑（之前误将相似度当距离处理）
+22. **置信度计算修复**：修正相似度计算逻辑
 
 #### 前端优化
 1. **API客户端超时配置**：类常量统一管理超时参数
@@ -493,6 +550,11 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 4. **阻塞sleep替换**：手动刷新按钮替代time.sleep阻塞
 5. **Bug修复**：sources变量初始化、建议按钮功能修复
 6. **UX改进**：确认对话框、输入长度限制、成功提示
+
+#### 代码组织优化
+1. **RAG模块化重构**：将核心代码拆分到 rag/core/ 和 rag/processing/ 子包
+2. **测试分层结构**：将测试按职责分为 unit/services/rag/api/integration
+3. **目录清理**：移除空目录和测试缓存
 
 ---
 
@@ -546,3 +608,8 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 - v0.1.6 - 置信度计算修复版本
   - 修复置信度计算逻辑（相似度vs距离）
   - 修复高匹配度不显示问题（始终显示匹配度百分比）
+- v0.2.0 - 模块化重构版本
+  - RAG模块重构：拆分 rag/core/ 和 rag/processing/ 子包
+  - 测试目录重构：分层结构（unit/services/rag/api/integration）
+  - 测试数量扩展至120个
+  - 清理空目录和测试缓存

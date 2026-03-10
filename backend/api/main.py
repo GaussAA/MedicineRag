@@ -434,7 +434,7 @@ async def detailed_health():
     # 检查知识库状态
     kb_status = {"status": "unknown", "document_count": 0}
     try:
-        from rag.engine import RAGEngine
+        from rag.core.engine import RAGEngine
         engine = RAGEngine()
         kb_status["document_count"] = engine.get_document_count()
         kb_status["status"] = "ready" if kb_status["document_count"] > 0 else "empty"

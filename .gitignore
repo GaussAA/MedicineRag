@@ -1,1 +1,73 @@
-    
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Streamlit
+.streamlit/
+.streamlit/secrets.toml
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables (包含敏感信息)
+.env
+.env.local
+.env.*.local
+
+# Data files (动态生成的内容)
+data/chroma_db/
+data/embedding_cache/
+data/logs/
+data/qa_stats.json
+data/storage/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+Thumbs.db
+
+# uv
+#.uv/           # 可选：如果你想忽略 uv 缓存

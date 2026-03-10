@@ -1,6 +1,6 @@
 {
-  "total_questions": 14,
-  "successful_answers": 13,
+  "total_questions": 15,
+  "successful_answers": 14,
   "failed_answers": 1,
   "no_result_answers": 0,
   "question_types": {
@@ -8,10 +8,18 @@
   },
   "sensitive_blocked": 0,
   "emergency_warnings": 0,
-  "avg_response_time_ms": 97300.0442130225,
-  "avg_retrieval_time_ms": 23.812992232186453,
-  "avg_llm_time_ms": 96127.05373764038,
+  "avg_response_time_ms": 92675.95861752827,
+  "avg_retrieval_time_ms": 22.353839874267578,
+  "avg_llm_time_ms": 91570.26158968608,
   "recent_questions": [
+    {
+      "question": "hello",
+      "type": null,
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 27938.76028060913,
+      "timestamp": "2026-03-10T14:59:14.286034"
+    },
     {
       "question": "啥是高血压",
       "type": "disease",

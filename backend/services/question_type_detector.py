@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from rag.prompts import QUESTION_TYPE_KEYWORDS
+from rag.core.prompts import QUESTION_TYPE_KEYWORDS
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)

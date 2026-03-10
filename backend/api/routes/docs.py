@@ -9,27 +9,15 @@ from backend.api.models import (
     DeleteResponse, RebuildResponse, StatsResponse,
     ErrorResponse
 )
-from backend.api.dependencies import get_doc_service_dep, get_rag_engine_dep
+from backend.api.dependencies import get_doc_service_dep as get_doc_service
 from backend.services.doc_service import DocService
 from backend.statistics import get_stats_instance
-from rag.engine import RAGEngine
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 # 创建路由
 router = APIRouter(prefix="/docs", tags=["文档管理"])
-
-# 使用统一的依赖工厂
-get_rag_engine = get_rag_engine_dep
-
-
-def get_doc_service(rag_engine: RAGEngine = Depends(get_rag_engine)) -> DocService:
-    """获取文档服务实例（依赖注入）
-    
-    保持向后兼容的函数签名，内部调用统一的依赖工厂
-    """
-    return get_doc_service_dep(rag_engine)
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -210,7 +198,7 @@ async def clear_knowledge_base(doc_service: DocService = Depends(get_doc_service
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(doc_service: DocService = Depends(get_doc_service_dep)):
+async def get_stats(doc_service: DocService = Depends(get_doc_service)):
     """获取统计信息（知识库 + 问答）
     
     Returns:

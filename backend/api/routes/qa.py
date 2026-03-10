@@ -11,13 +11,9 @@ from backend.api.models import (
     ErrorResponse
 )
 from backend.api.dependencies import (
-    get_rag_engine_dep,
-    get_security_service_dep,
-    get_qa_service_dep
+    get_qa_service_dep as get_qa_service
 )
 from backend.services.qa_service import QAService, QARequest as QARequestModel
-from rag.engine import RAGEngine
-from backend.services.security_service import SecurityService
 from backend.logging_config import get_logger
 from backend.exceptions import LLMException, VectorStoreError, EmbeddingError
 
@@ -25,22 +21,6 @@ logger = get_logger(__name__)
 
 # 创建路由
 router = APIRouter(prefix="/qa", tags=["问答"])
-
-
-# 使用统一的依赖工厂
-get_rag_engine = get_rag_engine_dep
-get_security_service = get_security_service_dep
-
-
-def get_qa_service(
-    rag_engine: RAGEngine = Depends(get_rag_engine),
-    security_service: SecurityService = Depends(get_security_service)
-) -> QAService:
-    """获取QA服务实例（依赖注入）
-    
-    保持向后兼容的函数签名，内部调用统一的依赖工厂
-    """
-    return get_qa_service_dep(rag_engine, security_service)
 
 
 @router.post("/ask", response_model=QAResponse)
