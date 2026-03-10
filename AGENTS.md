@@ -14,6 +14,7 @@
 | LLM          | Ollama qwen3:8b           |
 | Embedding    | BGE-M3:latest             |
 | 重排序模型   | BGE-Reranker-v2-m3:latest |
+| PDF解析      | pymupdf4llm (开源)        |
 | API框架      | FastAPI 0.100+            |
 | python包管理 | uv                        |
 
@@ -50,7 +51,7 @@ MedicineRag/
 ├── rag/                    # RAG核心引擎
 │   ├── engine.py           # RAG引擎实现（单例+LLM缓存+Embedding缓存）
 │   ├── chunker.py          # 智能文档分块（含分块缓存）
-│   ├── retriever.py        # 混合检索模块
+│   ├── retriever.py        # 混合检索模块（含60+同义词扩展）
 │   ├── reranker.py         # 重排序模块（两阶段检索）
 │   └── prompts.py          # Prompt模板
 ├── tests/                  # 单元测试（119个测试）
@@ -107,11 +108,11 @@ python scripts/start_all.py
 
 # 方式2：分别启动
 # 终端1：激活虚拟环境并运行Streamlit Web应用
-source .venv/Scripts/activate
+.venv\Scripts\activate
 streamlit run app/main.py
 
 # 终端2：运行API服务
-source .venv/Scripts/activate
+.venv\Scripts\activate
 uvicorn backend.api.main:app --reload --port 8000
 
 # 方式3：一键关闭
@@ -167,12 +168,14 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
 3. 问题类型自动检测（症状/疾病/用药/检查）
 4. 向量检索（Chroma + BGE-M3）
 5. **两阶段检索**：初始召回 → 重排序（BGE-Reranker-v2-m3）
-6. 置信度计算与警告
-7. LLM生成回答（Qwen3:8b）
-8. 返回回答 + 参考来源 + 置信度警告 + 免责声明
+6. **相似度阈值过滤**：过滤低相关性文档（SIMILARITY_THRESHOLD）
+7. 置信度计算与警告（始终显示匹配度百分比）
+8. LLM生成回答（Qwen3:8b）
+9. 返回回答 + 参考来源 + 置信度警告 + 免责声明
 
 ### 知识库管理
 - 支持PDF、Word、TXT、HTML、Markdown格式
+- **PDF解析**：使用pymupdf4llm（免费开源，输出Markdown格式）
 - 智能分块、向量化存储
 - 重建索引、清空知识库功能
 - 文档列表、删除功能
@@ -186,13 +189,29 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
 - 返回top_k=5个最相关结果
 - 可通过配置启用/禁用重排序功能
 
+#### 相似度阈值过滤
+- 根据 `SIMILARITY_THRESHOLD` 配置过滤低相关性文档
+- 默认阈值0.3，低于此分数的文档将被过滤
+
+#### 查询扩展
+- 60+组医学同义词扩展（心血管，呼吸、消化、泌尿、内分泌、神经、骨科、皮肤、眼科等）
+- 自动拼写错误纠正
+- 提升检索召回率
+
 #### 问题类型检测
 - 自动识别问题类型：症状相关、疾病相关、用药相关、检查相关
 - 用于统计分析和优化回答策略
 
 #### 置信度计算
-- 基于检索结果的相关性分数计算置信度
+- 基于检索结果的相似度分数计算置信度
+- **始终显示知识库匹配度百分比**（高/中/低三种级别）
 - 低置信度时自动给出警告提示
+
+| 匹配度 | 显示 |
+|--------|------|
+| >= 75% | ✅ 知识库匹配度良好（XX%）|
+| 60-74% | ℹ️ 知识库匹配度一般（XX%）|
+| < 60% | ⚠️ 知识库匹配度较低（XX%），回答仅供参考 |
 
 #### 流式输出
 - LLM回答逐字流式显示，减少等待焦虑
@@ -223,7 +242,7 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
 #### 多层缓存机制
 - **Embedding缓存**：LRU内存缓存 + 磁盘持久化，使用SHA256哈希作为缓存键
 - **LLM响应缓存**：基于问题哈希的响应缓存，减少重复LLM调用
-- **文档分块缓存**：基于内容哈希的分块结果缓存
+- **文档分块缓存**：基于内容哈希的分块结果缓存（类实例变量）
 - **查询分析缓存**：安全检查 + 问题类型检测结果缓存
 
 ---
@@ -269,7 +288,7 @@ RERANK_INITIAL_TOP_K=20
 CHUNK_SIZE=512
 CHUNK_OVERLAP=50
 TOP_K=5
-SIMILARITY_THRESHOLD=0.3
+SIMILARITY_THRESHOLD=0.3  # 相似度阈值过滤
 
 # LLM生成参数
 LLM_TEMPERATURE=0.2
@@ -356,6 +375,41 @@ class EmbeddingCache:
         ...
 ```
 
+### 智能分块器 (rag/chunker.py)
+
+- 医学术语保护（300+术语）
+- 文档结构保留
+- 类实例缓存管理
+
+```python
+class IntelligentChunker:
+    MEDICAL_TERMS = {
+        "高血压", "冠心病", "糖尿病", ...
+    }
+    
+    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 100):
+        self._chunk_cache = OrderedDict()  # 类实例缓存
+        ...
+```
+
+### 置信度计算器 (backend/services/confidence_calculator.py)
+
+基于检索结果的相似度分数计算置信度，始终显示匹配度百分比：
+
+```python
+class ConfidenceCalculator:
+    def calculate(self, retrieved_docs):
+        # 直接使用相似度分数（已经是0-1范围）
+        similarity = top_score * 100
+        
+        if similarity >= 75:
+            return "high", f"✅ 知识库匹配度良好（{similarity:.0f}%）"
+        elif similarity >= 60:
+            return "medium", f"ℹ️ 知识库匹配度一般（{similarity:.0f}%）"
+        else:
+            return "low", f"⚠️ 知识库匹配度较低（{similarity:.0f}%），回答仅供参考"
+```
+
 ### 统计模块 (backend/statistics.py)
 
 异步批量写入，避免频繁I/O：
@@ -420,14 +474,17 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 9. **API限流机制**：保护后端服务
 10. **两阶段检索**：初始召回 + 重排序，提升检索精度
 11. **问题类型检测**：自动识别问题类型
-12. **置信度计算**：低置信度警告
+12. **置信度计算**：始终显示知识库匹配度百分比
 13. **LLM响应缓存**：基于问题哈希的响应缓存
-14. **文档分块缓存**：基于内容哈希的分块结果缓存
+14. **文档分块缓存**：基于内容哈希的分块结果缓存（类实例变量）
 15. **查询分析缓存**：安全检查+问题类型检测结果缓存
 16. **日志请求ID追踪**：基于ContextVar的请求级别日志
 17. **降级处理**：LLM失败时返回检索到的资料
 18. **哈希缓存优化**：文档哈希增量计算，避免重复读取
 19. **移除重复导入**：将import语句移至文件顶部
+20. **相似度阈值过滤**：实际应用SIMILARITY_THRESHOLD配置
+21. **同义词扩展**：60+组医学同义词词典
+22. **置信度计算修复**：修正相似度计算逻辑（之前误将相似度当距离处理）
 
 #### 前端优化
 1. **API客户端超时配置**：类常量统一管理超时参数
@@ -449,6 +506,7 @@ pytest tests/ --cov=backend --cov=rag --cov=app
 6. **重排序模型**：首次使用需下载 `dengcao/bge-reranker-v2-m3:latest` 模型
 7. **启动顺序**：先启动后端API，再启动前端Streamlit
 8. **日志目录**：首次运行前需创建 `./data/logs` 目录
+9. **PDF解析**：默认使用 pymupdf4llm（免费开源），也可配置 LlamaParse（需API Key）
 
 ---
 
@@ -478,3 +536,13 @@ pytest tests/ --cov=backend --cov=rag --cov=app
   - 后端优化：LLM响应缓存、文档分块缓存、查询分析缓存
   - 日志优化：请求ID追踪、降级处理
   - 代码优化：哈希缓存优化、移除重复导入
+- v0.1.5 - 稳定性修复版本
+  - 修复StreamingResponse参数兼容性问题
+  - 修复Ollama Client timeout参数问题
+  - 修复PDF解析：使用pymupdf4llm替换LlamaParse（免费开源）
+  - 添加相似度阈值过滤（SIMILARITY_THRESHOLD实际应用）
+  - 扩展同义词词典至60+组
+  - 优化分块缓存为类实例变量
+- v0.1.6 - 置信度计算修复版本
+  - 修复置信度计算逻辑（相似度vs距离）
+  - 修复高匹配度不显示问题（始终显示匹配度百分比）

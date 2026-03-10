@@ -105,6 +105,9 @@ class Config:
     # 文件上传配置
     MAX_FILE_SIZE_MB: int = _safe_int(os.getenv("MAX_FILE_SIZE_MB", ""), 50, "MAX_FILE_SIZE_MB")  # 单个文件最大大小（MB）
     ENABLE_DUPLICATE_CHECK: bool = _safe_bool(os.getenv("ENABLE_DUPLICATE_CHECK", ""), True, "ENABLE_DUPLICATE_CHECK")  # 是否启用重复文件检测
+    
+    # LlamaParse配置（用于高精度PDF解析，可选）
+    LLAMAPARSE_API_KEY: str = os.getenv("LLAMAPARSE_API_KEY", "")
 
     @classmethod
     def get_docs_dir(cls) -> Path:

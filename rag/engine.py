@@ -354,16 +354,22 @@ class RAGEngine:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
             elif file_path_obj.suffix.lower() == '.pdf':
-                # 优先使用 LlamaParse 解析 PDF（更高精度）
+                # 使用 pymupdf4llm 解析 PDF（免费开源高精度，支持Markdown输出）
                 try:
-                    from llama_parse import LlamaParse
-                    parser = LlamaParse(result_type="text", API_KEY=config.LLAMAPARSE_API_KEY if hasattr(config, 'LLAMAPARSE_API_KEY') else None)
-                    documents = parser.load_data(file_path)
-                    content = "\n\n".join([doc.text for doc in documents])
-                    logger.info("使用 LlamaParse 解析 PDF")
+                    import pymupdf4llm
+                    # 转换为 Markdown 格式，保留文档结构
+                    md_text = pymupdf4llm.to_markdown(file_path)
+                    content = md_text
+                    logger.info("使用 pymupdf4llm 解析 PDF")
                 except ImportError:
-                    # LlamaParse 未安装，回退到 SimpleDirectoryReader
-                    logger.info("LlamaParse 未安装，使用 SimpleDirectoryReader 解析 PDF")
+                    logger.warning("pymupdf4llm 未安装，回退到 SimpleDirectoryReader")
+                    from llama_index.core import SimpleDirectoryReader
+                    reader = SimpleDirectoryReader(input_files=[file_path])
+                    documents = reader.load_data()
+                    content = "\n\n".join([doc.text for doc in documents])
+                except Exception as e:
+                    # pymupdf4llm 解析失败，回退到 SimpleDirectoryReader
+                    logger.warning(f"pymupdf4llm 解析失败: {e}，回退到 SimpleDirectoryReader")
                     from llama_index.core import SimpleDirectoryReader
                     reader = SimpleDirectoryReader(input_files=[file_path])
                     documents = reader.load_data()

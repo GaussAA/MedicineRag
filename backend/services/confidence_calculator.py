@@ -43,15 +43,16 @@ class ConfidenceCalculator:
         if not retrieved_docs:
             return "low", "⚠️ 知识库中未找到相关内容"
         
-        # 获取最高相似度分数
+        # 获取最高相似度分数（已经是相似度，不是距离）
         top_score = retrieved_docs[0].get('score')
         
         if top_score is None:
             return "normal", ""
         
-        # 转换为相似度百分比
-        similarity = (1 - top_score) * 100
+        # 直接将分数转换为百分比（已经是相似度）
+        similarity = top_score * 100
         
+        # 始终显示匹配度，只是警告级别不同
         if similarity < self.medium_threshold:
             warning = f"⚠️ 知识库匹配度较低（{similarity:.0f}%），回答仅供参考"
             return "low", warning
@@ -59,7 +60,9 @@ class ConfidenceCalculator:
             warning = f"ℹ️ 知识库匹配度一般（{similarity:.0f}%）"
             return "medium", warning
         else:
-            return "high", ""
+            # 高匹配度也显示，让用户知道匹配度高
+            warning = f"✅ 知识库匹配度良好（{similarity:.0f}%）"
+            return "high", warning
     
     def calculate_with_sources(
         self,

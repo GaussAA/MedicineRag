@@ -20,11 +20,6 @@ from backend.exceptions import DocumentParseError
 logger = get_logger(__name__)
 
 
-# 模块级别的文档分块缓存（避免重复分块相同文档）
-_doc_chunk_cache: OrderedDict = OrderedDict()
-_DOC_CACHE_MAX_SIZE = 20  # 最多缓存20个文档的分块结果
-
-
 @dataclass
 class Chunk:
     """分块结果"""
@@ -153,6 +148,10 @@ class IntelligentChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
+        
+        # 实例级文档分块缓存（避免重复分块相同文档）
+        self._chunk_cache: OrderedDict = OrderedDict()
+        self._cache_max_size: int = 20  # 最多缓存20个文档的分块结果
     
     def chunk_text(self, text: str, file_path: str = "") -> List[Chunk]:
         """对文本进行智能分块
@@ -169,9 +168,9 @@ class IntelligentChunker:
         
         # 检查文档内容哈希缓存（避免重复分块相同文档）
         content_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
-        if content_hash in _doc_chunk_cache:
+        if content_hash in self._chunk_cache:
             logger.debug(f"文档分块缓存命中: {content_hash[:8]}...")
-            return _doc_chunk_cache[content_hash]
+            return self._chunk_cache[content_hash]
         
         # 提取标题结构
         titles = self._extract_titles(text)
@@ -186,10 +185,10 @@ class IntelligentChunker:
         
         logger.info(f"分块完成，得到 {len(chunks)} 个块")
         
-        # 缓存分块结果（直接使用模块级变量，无需global声明）
-        _doc_chunk_cache[content_hash] = chunks
-        if len(_doc_chunk_cache) > _DOC_CACHE_MAX_SIZE:
-            _doc_chunk_cache.popitem(last=False)
+        # 缓存分块结果
+        self._chunk_cache[content_hash] = chunks
+        if len(self._chunk_cache) > self._cache_max_size:
+            self._chunk_cache.popitem(last=False)
         
         return chunks
     

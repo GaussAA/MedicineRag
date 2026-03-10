@@ -15,30 +15,31 @@ class TestConfidenceCalculator:
         self.calculator = ConfidenceCalculator()
     
     def test_calculate_high_confidence(self):
-        """测试高置信度"""
+        """测试高置信度 - 相似度 >= 75%"""
         docs = [
-            {'score': 0.1},  # similarity = 0.9 = 90%
-            {'score': 0.2},
+            {'score': 0.9},  # 90% 相似度
+            {'score': 0.8},
         ]
         level, warning = self.calculator.calculate(docs)
         assert level == "high"
-        assert warning == ""
+        assert "匹配度" in warning  # 现在高匹配度也显示
+        assert "90%" in warning
     
     def test_calculate_medium_confidence(self):
-        """测试中等置信度"""
+        """测试中等置信度 - 60% <= 相似度 < 75%"""
         docs = [
-            {'score': 0.3},  # similarity = 0.7 = 70%
-            {'score': 0.4},
+            {'score': 0.7},  # 70% 相似度
+            {'score': 0.6},
         ]
         level, warning = self.calculator.calculate(docs)
         assert level == "medium"
         assert "一般" in warning
     
     def test_calculate_low_confidence(self):
-        """测试低置信度"""
+        """测试低置信度 - 相似度 < 60%"""
         docs = [
-            {'score': 0.5},  # similarity = 0.5 = 50%
-            {'score': 0.6},
+            {'score': 0.5},  # 50% 相似度
+            {'score': 0.4},
         ]
         level, warning = self.calculator.calculate(docs)
         assert level == "low"
@@ -65,14 +66,14 @@ class TestConfidenceCalculator:
         docs = [
             {
                 'text': '这是文档内容',
-                'score': 0.2,
+                'score': 0.9,  # 90% 相似度
                 'metadata': {'file_path': 'test.txt', 'chunk_id': 0}
             }
         ]
         result = self.calculator.calculate_with_sources(docs)
         
         assert result['confidence_level'] == 'high'
-        assert result['warning'] == ""
+        assert "匹配度" in result['warning']  # 现在高匹配度也显示
         assert 'sources' in result
         assert len(result['sources']) == 1
         assert result['sources'][0]['file_path'] == 'test.txt'
@@ -80,7 +81,7 @@ class TestConfidenceCalculator:
     def test_calculate_without_sources(self):
         """测试不包含来源的计算"""
         docs = [
-            {'score': 0.2}
+            {'score': 0.9}
         ]
         result = self.calculator.calculate_with_sources(docs, include_sources=False)
         
@@ -91,12 +92,12 @@ class TestConfidenceCalculator:
         calculator = ConfidenceCalculator(high_threshold=80.0, medium_threshold=50.0)
         
         # 70% - 应该返回medium因为低于80但高于50
-        docs = [{'score': 0.3}]  # similarity = 70%
+        docs = [{'score': 0.7}]  # 70% 相似度
         level, _ = calculator.calculate(docs)
         assert level == "medium"
         
         # 85% - 应该返回high因为高于80
-        docs = [{'score': 0.15}]  # similarity = 85%
+        docs = [{'score': 0.85}]  # 85% 相似度
         level, _ = calculator.calculate(docs)
         assert level == "high"
     
