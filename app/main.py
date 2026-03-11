@@ -1,9 +1,13 @@
 """医疗知识问答系统 - 主页面"""
 
+import json
 import logging
 import streamlit as st
 
 from app.api_client import get_api_client
+from app.components import show_disclaimer, show_sources, show_confidence_indicator
+from app.constants import STATS_CACHE_TIMEOUT, MAX_INPUT_CHARS
+from backend.config import config
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -40,7 +44,7 @@ def init_session_state():
     if "_stats_cache" not in st.session_state:
         st.session_state._stats_cache = {"data": None, "timestamp": 0}
     if "_stats_cache_timeout" not in st.session_state:
-        st.session_state._stats_cache_timeout = 30  # 30秒
+        st.session_state._stats_cache_timeout = STATS_CACHE_TIMEOUT  # 从常量读取
     
     # Agent 模式相关状态
     if "agent_mode" not in st.session_state:
@@ -106,6 +110,11 @@ def show_sidebar():
             - 索引块数：{stats.get('indexed_chunks', 0)}
             - 总大小：{stats.get('total_size', '0 KB')}
             """)
+            # 添加手动刷新按钮
+            if st.button("🔄 刷新状态", use_container_width=True):
+                # 清除缓存
+                st.session_state._stats_cache = {"data": None, "timestamp": 0}
+                st.rerun()
         else:
             st.markdown("**知识库状态：** 无法获取")
 
@@ -203,20 +212,21 @@ def show_sidebar():
             st.rerun()
 
 
-def show_disclaimer():
-    """显示免责声明"""
-    st.warning("""
-    ⚠️ **免责声明**：本系统回答仅供参考，不能替代医生诊断。如有严重症状，请立即就医。
-    紧急情况请拨打120急救电话。
-    """)
-
-
 def main():
     """主函数"""
     try:
         # 初始化
         init_session_state()
         api_client = st.session_state.api_client
+        
+        # API服务健康检查
+        try:
+            health = api_client.health_check()
+            if health.get("status") != "healthy":
+                st.warning("⚠️ API服务状态异常，部分功能可能不可用")
+        except Exception as e:
+            st.error(f"❌ 无法连接到API服务，请确保后端服务正在运行！\n\n**错误**: {str(e)[:100]}\n\n**解决方法**: 请在终端运行 `python scripts/start_all.py` 或手动启动后端服务")
+            st.stop()
 
         # 检查是否首次使用
         if not st.session_state.agreed_to_terms:
@@ -240,9 +250,7 @@ def main():
 
         # 知识库状态提示（使用缓存）
         stats = st.session_state._stats_cache.get("data")
-        if stats and stats.get('document_count', 0) == 0:
-            st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
-        elif not stats:
+        if not stats or stats.get('document_count', 0) == 0:
             st.info("📭 知识库为空，请先在侧边栏上传医疗文档！")
 
         # 显示对话历史
@@ -252,11 +260,7 @@ def main():
 
                 # 显示参考来源
                 if "sources" in message and message["sources"]:
-                    with st.expander("📄 参考来源"):
-                        for idx, src in enumerate(message["sources"], 1):
-                            score_text = f" (相似度: {src['score']:.1f}%)" if src.get("score") else ""
-                            st.markdown(f"**{idx}. {src['source']}**{score_text}")
-                            st.markdown(f"_{src['content']}_")
+                    show_sources(message["sources"])
 
         # 免责声明
         show_disclaimer()
@@ -266,14 +270,40 @@ def main():
             st.markdown("### 💬 继续提问")
             last_question = st.session_state.history[-1]['question'] if st.session_state.history else ""
             
-            # 生成可能的追问建议
+            # 生成可能的追问建议（基于关键词匹配）
             suggestions = []
-            if "高血压" in last_question:
-                suggestions = ["高血压需要注意什么饮食？", "高血压患者能运动吗？", "高血压吃什么药好？"]
-            elif "糖尿病" in last_question:
-                suggestions = ["糖尿病的饮食禁忌有哪些？", "如何预防糖尿病并发症？", "糖尿病需要做哪些检查？"]
-            elif "感冒" in last_question:
-                suggestions = ["感冒了需要吃什么药？", "感冒和流感有什么区别？", "如何预防感冒？"]
+            question_lower = last_question.lower()
+            
+            # 定义更丰富的关键词-建议映射
+            keyword_suggestions = {
+                "高血压": ["高血压需要注意什么饮食？", "高血压患者能运动吗？", "高血压吃什么药好？"],
+                "糖尿病": ["糖尿病的饮食禁忌有哪些？", "如何预防糖尿病并发症？", "糖尿病需要做哪些检查？"],
+                "感冒": ["感冒了需要吃什么药？", "感冒和流感有什么区别？", "如何预防感冒？"],
+                "心脏病": ["心脏病的早期症状有哪些？", "如何预防心脏病？", "心脏病饮食需要注意什么？"],
+                "癌症": ["如何早期发现癌症？", "癌症预防措施有哪些？", "哪些习惯容易导致癌症？"],
+                "肺炎": ["肺炎有哪些症状？", "如何预防肺炎？", "肺炎需要住院治疗吗？"],
+                "胃": ["胃炎有哪些症状？", "如何养胃？", "胃痛需要做什么检查？"],
+                "肝": ["如何保护肝脏？", "肝炎有哪些传播途径？", "肝功能异常怎么办？"],
+                "肾": ["肾病有哪些早期症状？", "如何保护肾脏？", "肾功能检查有哪些？"],
+                "肺": ["如何保护肺部健康？", "吸烟对肺部的影响有哪些？", "肺部检查有哪些？"],
+                "头痛": ["头痛有哪些原因？", "如何缓解头痛？", "什么样的头痛需要就医？"],
+                "发烧": ["发烧了怎么办？", "发烧需要吃退烧药吗？", "什么样的发烧需要重视？"],
+                "咳嗽": ["咳嗽一直不好怎么办？", "干咳和湿咳有什么区别？", "什么情况的咳嗽需要就医？"],
+            }
+            
+            # 匹配关键词并生成建议
+            for keyword, keyword_suggestions_list in keyword_suggestions.items():
+                if keyword in last_question or keyword in question_lower:
+                    suggestions = keyword_suggestions_list
+                    break
+            
+            # 如果没有匹配的关键词，显示通用建议
+            if not suggestions:
+                suggestions = [
+                    "这个病需要注意什么？",
+                    "如何治疗这个疾病？",
+                    "吃什么药效果好？"
+                ]
             
             # 如果有建议，显示按钮
             if suggestions:
@@ -294,8 +324,8 @@ def main():
             prompt = None
         
         # 聊天输入（限制500字符）
-        input_placeholder = "请输入您的医疗问题... (最多500字)"
-        if prompt := st.chat_message("user").chat_input(input_placeholder, max_chars=500):
+        input_placeholder = "请输入您的医疗问题... (最多{}字符)".format(MAX_INPUT_CHARS)
+        if prompt := st.chat_message("user").chat_input(input_placeholder, max_chars=MAX_INPUT_CHARS):
             # 用户消息
             st.chat_message("user").markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -312,6 +342,7 @@ def main():
                     followup_questions = []
                     knowledge_gaps = []
                     confidence = 0.0
+                    disclaimer_text = ""
                     
                     try:
                         if st.session_state.agent_mode:
@@ -334,20 +365,19 @@ def main():
                         for chunk in stream_generator:
                             # 检查是否是特殊数据（Agent 模式）
                             if chunk.startswith("__SOURCE__: "):
-                                import json
                                 source_data = json.loads(chunk[12:])
                                 sources.append(source_data)
                             elif chunk.startswith("__FOLLOWUP__: "):
-                                import json
                                 followup_questions = json.loads(chunk[13:])
                             elif chunk.startswith("__KNOWLEDGE_GAPS__: "):
-                                import json
                                 knowledge_gaps = json.loads(chunk[18:])
                             elif chunk.startswith("__CONFIDENCE__: "):
                                 confidence = float(chunk[16:])
                             elif chunk.startswith("__STEPS__: "):
                                 # Agent 推理步骤，仅记录不显示
                                 pass
+                            elif chunk.startswith("__DISCLAIMER__: "):
+                                disclaimer_text = json.loads(chunk[15:])
                             elif chunk.strip():
                                 # 非特殊数据直接显示
                                 full_response += chunk
@@ -367,21 +397,18 @@ def main():
                                     for gap in knowledge_gaps:
                                         st.markdown(f"- {gap}")
                             
-                            # 显示置信度
+                            # 显示置信度（使用配置阈值）
                             if confidence > 0:
-                                conf_color = "🟢" if confidence >= 0.7 else ("🟡" if confidence >= 0.5 else "🔴")
+                                conf_color = "🟢" if confidence >= config.CONFIDENCE_HIGH else ("🟡" if confidence >= config.CONFIDENCE_MEDIUM else "🔴")
                                 st.caption(f"{conf_color} 置信度: {confidence:.1%}")
+                        
+                        # 显示免责声明
+                        if disclaimer_text:
+                            st.caption(f"⚠️ {disclaimer_text}")
                         
                         # 显示参考来源
                         if sources:
-                            with st.expander("📄 参考来源"):
-                                for idx, src in enumerate(sources, 1):
-                                    score_text = f" (相似度: {src.get('score', 0):.1f}%)" if src.get("score") else ""
-                                    st.markdown(f"**{idx}. {src.get('source', '未知来源')}**{score_text}")
-                                    content = src.get('content', '')
-                                    if len(content) > 200:
-                                        content = content[:200] + "..."
-                                    st.markdown(f"_{content}_")
+                            show_sources(sources)
                                     
                     except Exception as e:
                         st.error(f"请求失败: {e}")
@@ -406,7 +433,7 @@ def main():
     except Exception as e:
         """全局错误边界"""
         import traceback
-        st.error(f"⚠️ 系统发生错误：{str(e)[:100]}")
+        st.error(f"⚠️ 系统发生错误：{str(e)[:200]}\n\n如问题持续存在，请刷新页面重试。")
         st.info("请刷新页面重试，如果问题持续存在，请联系管理员。")
         
         if st.button("🔄 刷新页面"):

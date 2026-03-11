@@ -10,6 +10,8 @@
 import streamlit as st
 from typing import List, Dict, Any, Optional
 
+from backend.config import config
+
 
 def show_sources(sources: List[Dict[str, Any]], expanded: bool = False) -> None:
     """显示参考来源
@@ -49,11 +51,11 @@ def show_confidence_indicator(confidence: float) -> None:
     if confidence <= 0:
         return
 
-    # 颜色映射
-    if confidence >= 0.7:
+    # 颜色映射（使用配置阈值）
+    if confidence >= config.CONFIDENCE_HIGH:
         color_emoji = "🟢"
         color_text = "green"
-    elif confidence >= 0.5:
+    elif confidence >= config.CONFIDENCE_MEDIUM:
         color_emoji = "🟡"
         color_text = "orange"
     else:

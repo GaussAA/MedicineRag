@@ -140,7 +140,11 @@ def main():
         if 'rebuild_status' not in st.session_state:
             st.session_state.rebuild_status = None
         
-        if st.button("🔄 重建索引", use_container_width=True):
+        # 根据重建状态设置按钮文本和禁用状态
+        is_rebuilding = st.session_state.rebuild_active
+        button_text = "🔄 重建中..." if is_rebuilding else "🔄 重建索引"
+        
+        if st.button(button_text, use_container_width=True, disabled=is_rebuilding):
             with st.spinner("正在启动重建任务..."):
                 try:
                     result = api_client.rebuild_index()

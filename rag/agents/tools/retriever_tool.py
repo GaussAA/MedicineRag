@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from backend.logging_config import get_logger
 from backend.exceptions import VectorStoreError
+from backend.config import config
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ class RetrieverTool:
             # 执行检索
             docs = self.rag_engine.retrieve(
                 query=adjusted_query,
-                top_k=top_k or 5,
+                top_k=top_k or config.TOP_K,
                 use_hybrid=use_hybrid
             )
             

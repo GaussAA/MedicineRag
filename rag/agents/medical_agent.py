@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 
 from backend.logging_config import get_logger
 from backend.config import config
+from backend.services.question_type_detector import (
+    get_question_type_detector,
+    is_medical_related,
+    detect_question_type
+)
 
 from rag.agents.base import BaseAgent, AgentResult, AgentState
 from rag.agents.tools.retriever_tool import RetrieverTool, create_retriever_tool
@@ -26,14 +31,14 @@ logger = get_logger(__name__)
 @dataclass
 class AgentConfig:
     """Agent 配置"""
-    max_steps: int = 5
-    temperature: float = 0.2
+    max_steps: int = field(default_factory=lambda: config.AGENT_MAX_STEPS)
+    temperature: float = field(default_factory=lambda: config.LLM_TEMPERATURE)
     timeout: int = 300
     enable_reflection: bool = True
     enable_followup: bool = True
     enable_knowledge_gap: bool = True
     min_confidence_threshold: float = 0.5
-    min_docs_for_answer: int = 2  # 最少检索文档数，少于此数则继续检索
+    min_docs_for_answer: int = field(default_factory=lambda: config.MIN_DOCS_FOR_ANSWER)
 
 
 class MedicalAgent(BaseAgent):
@@ -140,6 +145,28 @@ class MedicalAgent(BaseAgent):
         """
         session_id = context.get("session_id", "default")
         
+        # ===== 预判阶段：检查问题是否与医疗相关 =====
+        question_type = detect_question_type(query)
+        logger.info(f"问题类型检测: {question_type}")
+        
+        # 非医疗问题直接返回友好回答
+        if not is_medical_related(query):
+            logger.info(f"检测到非医疗问题类型: {question_type}，跳过检索直接回答")
+            
+            # 生成友好回答
+            friendly_answer = self._generate_friendly_response(query, question_type)
+            
+            # 添加到记忆
+            self.memory.add_message(session_id, "assistant", friendly_answer)
+            
+            return AgentResult(
+                answer=friendly_answer,
+                sources=[],
+                steps=[],
+                confidence=1.0
+            )
+        # ===== 预判阶段结束 =====
+        
         # 添加用户消息到记忆
         self.memory.add_message(session_id, "user", query)
         
@@ -148,7 +175,7 @@ class MedicalAgent(BaseAgent):
             "query": query,
             "session_id": session_id,
             "retrieved_docs": [],
-            "question_type": "unknown",
+            "question_type": question_type,
             "is_safe": True,
             "steps": []
         }
@@ -260,6 +287,34 @@ class MedicalAgent(BaseAgent):
             return "\n".join(context_parts)
         except Exception:
             return ""
+
+    def _generate_friendly_response(self, query: str, question_type: Optional[str]) -> str:
+        """生成友好回答（非医疗问题）
+        
+        Args:
+            query: 用户查询
+            question_type: 问题类型
+            
+        Returns:
+            str: 友好回答
+        """
+        query_lower = query.lower().strip()
+        
+        # 问候语回复
+        if question_type == "greeting":
+            greetings = [
+                "您好！👋 我是医疗知识问答助手，专注于为您提供医疗健康相关的咨询帮助。请问有什么可以帮您的吗？",
+                "您好呀！😊 我是您的医疗健康助手。如果您有任何关于疾病、症状、用药或检查报告的问题，欢迎随时向我咨询。",
+                "嗨！✨ 我是医疗问答助手，擅长解答各种医疗健康问题。有什么需要帮助的吗？",
+            ]
+            return greetings[hash(query_lower) % len(greetings)]
+        
+        # 非医疗话题回复
+        elif question_type == "off_topic":
+            return f"抱歉，我是一个医疗知识问答助手，主要帮助您解答关于疾病、症状、用药、检查等方面的医疗问题。\n\n您的问题是「{query}」，这个话题我不太擅长。如果您有医疗健康方面的问题，欢迎随时问我！🏥"
+        
+        # 未知类型但非医疗
+        return f"您好！我是一个专注于医疗健康领域的问答系统。您的问题是「{query}」，这个内容超出了我的专业范围。\n\n如果您有其他医疗健康方面的问题（如疾病症状、用药指导、检查结果解读等），我会很乐意帮助您！💊"
 
     async def _think_decide_reflect(
         self,
@@ -417,13 +472,13 @@ class MedicalAgent(BaseAgent):
         
         if not docs:
             # 还没有检索
-            return True, "需要检索知识库", "retrieve_docs", {"query": query, "top_k": 5}
+            return True, "需要检索知识库", "retrieve_docs", {"query": query, "top_k": config.TOP_K}
         elif len(docs) >= 2:
             # 已有足够文档
             return False, "已获得足够信息", None, None
         else:
             # 文档较少，尝试补充
-            return True, "检索结果较少，尝试补充检索", "retrieve_docs", {"query": query, "top_k": 5}
+            return True, "检索结果较少，尝试补充检索", "retrieve_docs", {"query": query, "top_k": config.TOP_K}
 
     async def _think(self, query: str, context: Dict[str, Any], step_idx: int = 0) -> str:
         """思考步骤
@@ -493,7 +548,7 @@ class MedicalAgent(BaseAgent):
         if "检索" in thought or "知识库" in thought or not context.get("retrieved_docs"):
             return "retrieve_docs", {
                 "query": context.get("query", ""),
-                "top_k": 5
+                "top_k": config.TOP_K
             }
         
         # 检查是否需要追问
@@ -589,7 +644,7 @@ class MedicalAgent(BaseAgent):
             if "query" not in action_input:
                 action_input["query"] = query
             if "top_k" not in action_input:
-                action_input["top_k"] = 5
+                action_input["top_k"] = config.TOP_K
                 
         elif action == "check_security":
             if "query" not in action_input:
@@ -924,9 +979,9 @@ class MedicalAgent(BaseAgent):
             return []
 
     # 工具函数封装
-    def _tool_retrieve(self, query: str, top_k: int = 5, **kwargs) -> str:
+    def _tool_retrieve(self, query: str, top_k: int = None, **kwargs) -> str:
         """检索工具封装"""
-        return self.retriever_tool.retrieve(query, top_k=top_k, **kwargs)
+        return self.retriever_tool.retrieve(query, top_k=top_k or config.TOP_K, **kwargs)
 
     def _tool_security_check(self, query: str, **kwargs) -> str:
         """安全检查工具封装"""

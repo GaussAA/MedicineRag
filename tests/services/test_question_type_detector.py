@@ -58,13 +58,37 @@ class TestQuestionTypeDetector:
         assert result == "examination"
     
     def test_detect_none_for_generic(self):
-        """测试通用问题返回None"""
-        # 通用问题
-        result = self.detector.detect("你好")
+        """测试通用问题返回None（不含关键词的问题）"""
+        # 不含任何关键词的问题返回None
+        result = self.detector.detect("这个问题怎么回答")
         assert result is None
+    
+    def test_detect_greeting(self):
+        """测试问候语识别"""
+        # 问候语
+        result = self.detector.detect("你好")
+        assert result == "greeting"
         
         result = self.detector.detect("谢谢")
-        assert result is None
+        assert result == "greeting"
+        
+        result = self.detector.detect("hello")
+        assert result == "greeting"
+        
+        result = self.detector.detect("早上好")
+        assert result == "greeting"
+    
+    def test_detect_off_topic(self):
+        """测试非医疗话题识别"""
+        # 非医疗话题
+        result = self.detector.detect("今天天气怎么样")
+        assert result == "off_topic"
+        
+        result = self.detector.detect("股票行情")
+        assert result == "off_topic"
+        
+        result = self.detector.detect("今晚足球比赛")
+        assert result == "off_topic"
     
     def test_detect_with_multiple_keywords(self):
         """测试多关键词问题"""

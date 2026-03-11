@@ -29,6 +29,7 @@ MedicineRag/
 │   ├── main.py             # 主问答页面（支持Agent模式切换）
 │   ├── api_client.py       # API客户端（支持Agent API + SSE解析优化）
 │   ├── components.py       # 可复用UI组件
+│   ├── constants.py        # 前端常量定义
 │   └── pages/
 │       ├── knowledge.py    # 知识库管理页面
 │       └── analytics.py    # 系统统计页面
@@ -49,7 +50,7 @@ MedicineRag/
 │       ├── qa_service.py           # 问答服务（含查询缓存+公共方法重构）
 │       ├── doc_service.py          # 文档管理服务（含哈希缓存）
 │       ├── security_service.py     # 安全检查服务
-│       ├── question_type_detector.py # 问题类型检测
+│       ├── question_type_detector.py # 问题类型检测（含非医疗问题识别）
 │       └── confidence_calculator.py # 置信度计算
 │
 ├── rag/                   # RAG核心引擎（模块化结构）
@@ -61,7 +62,7 @@ MedicineRag/
 │   ├── agents/            # Agent模块
 │   │   ├── __init__.py
 │   │   ├── base.py        # Agent抽象基类（ReAct框架）
-│   │   ├── medical_agent.py # 医疗问答Agent实现
+│   │   ├── medical_agent.py # 医疗问答Agent实现（含智能预判）
 │   │   ├── tools/         # Agent工具集
 │   │   │   ├── __init__.py
 │   │   │   ├── retriever_tool.py    # 文档检索工具
@@ -75,7 +76,7 @@ MedicineRag/
 │   │   ├── engine.py      # RAG引擎实现（Facade模式+依赖注入）
 │   │   ├── retriever.py   # 混合检索模块（含60+同义词扩展）
 │   │   ├── reranker.py    # 重排序模块（两阶段检索）
-│   │   └── prompts.py     # Prompt模板
+│   │   └── prompts.py     # Prompt模板（含非医疗问题关键词）
 │   └── processing/        # 处理模块
 │       ├── chunker.py     # 智能文档分块（含分块缓存）
 │       └── document_processor.py # 文档处理
@@ -193,6 +194,7 @@ python scripts/stop_all.py
 - 简单直接，适合标准问答场景
 
 #### Agentic RAG（智能体增强）
+- **智能预判机制**：在回答前先判断问题是否与医疗相关，非医疗问题直接返回友好回答
 - **ReAct推理模式（优化版）**：思考+决策+反思合并为单次LLM调用，大幅提升响应速度
 - **工具调用**：Agent自主决定调用哪些工具
 - **动态决策**：根据检索结果决定是否需要补充检索
@@ -201,12 +203,15 @@ python scripts/stop_all.py
 - **对话历史增强**：自动获取最近3轮对话上下文
 
 ```
-用户问题 → Agent(优化ReAct循环)
-           ├── 步骤N: 思考+决策+反思（一次LLM调用）
-           │         └── 分析意图 → 选择工具 → 判断是否继续
-           ├── 执行行动：调用工具（检索/安全检查/追问/知识缺口）
-           └── 观察结果 → 更新上下文
-           → 生成最终回答
+用户问题 → Agent预判阶段
+           ├── 问题类型检测（greeting/off_topic/症状/疾病/用药/检查）
+           ├── 非医疗问题 → 直接返回友好回答
+           └── 医疗问题 → ReAct推理循环
+                        ├── 步骤N: 思考+决策+反思（一次LLM调用）
+                        │         └── 分析意图 → 选择工具 → 判断是否继续
+                        ├── 执行行动：调用工具（检索/安全检查/追问/知识缺口）
+                        └── 观察结果 → 更新上下文
+                        → 生成最终回答
 ```
 
 ### 模块化设计
@@ -247,18 +252,23 @@ RAG核心采用Facade模式和依赖注入：
 9. 返回回答 + 参考来源 + 置信度警告 + 免责声明
 
 #### Agentic RAG 模式
-1. 用户输入医疗问题
-2. Agent接收问题，进入ReAct推理循环
-3. **思考步骤**：LLM分析问题，决定下一步行动
-4. **行动执行**：调用工具（可多轮）
-   - 安全检查工具：检测敏感内容/紧急症状
-   - 检索工具：查询知识库
-   - 追问工具：生成跟进问题
-   - 知识缺口工具：识别知识库薄弱领域
-5. **反思步骤**：判断结果是否足够
-6. **早停检查**：已有足够文档时提前退出
-7. 生成最终回答
-8. 返回回答 + 推理步骤 + 参考来源 + 置信度 + 追问问题 + 知识缺口
+1. 用户输入问题
+2. **智能预判阶段**：检测问题类型（greeting/off_topic/医疗相关）
+3. **非医疗问题处理**：
+   - 问候语（greeting）→ 友好问候并引导提问医疗问题
+   - 非医疗话题（off_topic）→ 说明专业范围，建议提问医疗问题
+4. **医疗问题处理**：
+   - Agent接收问题，进入ReAct推理循环
+   - **思考步骤**：LLM分析问题，决定下一步行动
+   - **行动执行**：调用工具（可多轮）
+     - 安全检查工具：检测敏感内容/紧急症状
+     - 检索工具：查询知识库
+     - 追问工具：生成跟进问题
+     - 知识缺口工具：识别知识库薄弱领域
+   - **反思步骤**：判断结果是否足够
+   - **早停检查**：已有足够文档时提前退出
+5. 生成最终回答
+6. 返回回答 + 推理步骤 + 参考来源 + 置信度 + 追问问题 + 知识缺口
 
 ### Agent工具集
 
@@ -268,6 +278,13 @@ RAG核心采用Facade模式和依赖注入：
 | check_security              | 安全检查     | 检测敏感内容和紧急医疗情况 |
 | generate_followup_questions | 主动追问     | 基于问题和答案生成跟进问题 |
 | identify_knowledge_gap      | 知识缺口识别 | 识别知识库薄弱领域         |
+
+### 智能预判功能
+
+- **问题类型识别**：自动识别问候语、非医疗话题、医疗相关问题
+- **问候语识别**：支持中英文问候（你好、hello、早上好等）
+- **非医疗话题识别**：自动识别天气、股票、球赛等非医疗话题
+- **友好回复**：非医疗问题返回友好引导回答，不进行无意义检索
 
 ### 知识库管理
 - 支持PDF、Word、TXT、HTML、Markdown格式
@@ -297,6 +314,7 @@ RAG核心采用Facade模式和依赖注入：
 #### 问题类型检测
 - 自动识别问题类型：症状相关、疾病相关、用药相关、检查相关
 - **中英文双语支持**：150+关键词（中英文）
+- 新增：**问候语识别**（greeting）和**非医疗话题识别**（off_topic）
 - 用于统计分析和优化回答策略
 
 #### 置信度计算
@@ -529,14 +547,65 @@ class ConversationMemory:
         ...
 ```
 
-### Agent参数自动补充 (rag/agents/medical_agent.py)
+### Agent预判逻辑 (rag/agents/medical_agent.py)
 
 ```python
 class MedicalAgent:
-    def _ensure_required_params(self, action: str, action_input: Dict) -> Dict:
-        """确保工具调用包含必需的参数"""
-        # 自动补充缺失的query、question_type等参数
+    async def _run_react_loop(self, query: str, context: Dict[str, Any]) -> AgentResult:
+        # ===== 预判阶段：检查问题是否与医疗相关 =====
+        question_type = detect_question_type(query)
+        
+        # 非医疗问题直接返回友好回答
+        if not is_medical_related(query):
+            friendly_answer = self._generate_friendly_response(query, question_type)
+            return AgentResult(answer=friendly_answer, sources=[], confidence=1.0)
+        # ===== 预判阶段结束 =====
+        
+        # 继续ReAct推理循环...
+    
+    def _generate_friendly_response(self, query: str, question_type: Optional[str]) -> str:
+        """生成友好回答（非医疗问题）"""
         ...
+```
+
+### 问题类型检测增强 (backend/services/question_type_detector.py)
+
+```python
+NON_MEDICAL_TYPES = {"greeting", "off_topic"}
+
+class QuestionTypeDetector:
+    def is_medical_related(self, question: str) -> bool:
+        """判断问题是否与医疗相关"""
+        question_type = self.detect(question)
+        if question_type in NON_MEDICAL_TYPES:
+            return False
+        return True
+    
+    def is_greeting(self, question: str) -> bool:
+        return self.detect(question) == "greeting"
+    
+    def is_off_topic(self, question: str) -> bool:
+        return self.detect(question) == "off_topic"
+```
+
+### 前端常量定义 (app/constants.py)
+
+```python
+"""前端常量定义"""
+
+# API配置
+DEFAULT_API_BASE_URL = "http://localhost:8000"
+
+# 超时配置（秒）
+DEFAULT_TIMEOUT = 30
+STREAM_TIMEOUT = 300
+UPLOAD_TIMEOUT = 600
+
+# 缓存配置
+STATS_CACHE_TIMEOUT = 30  # 统计缓存超时（秒）
+
+# 输入限制
+MAX_INPUT_CHARS = 500  # 输入字符数限制
 ```
 
 ---
@@ -582,6 +651,10 @@ python test_health.py
   - 独立于单例的实例创建测试
   - 自定义组件注入测试
   - get_component方法测试
+- `TestQuestionTypeDetector`: 问题类型检测测试
+  - 问候语识别测试（greeting）
+  - 非医疗话题识别测试（off_topic）
+  - 医疗问题识别测试（症状/疾病/用药/检查）
 
 ---
 
@@ -590,19 +663,20 @@ python test_health.py
 ### 已完成的优化
 
 #### Agent优化
-1. **ReAct推理循环**：思考→行动→观察→反思的智能决策
-2. **工具调用**：Agent自主选择调用安全检查/检索/追问等工具
-3. **反思机制**：基于检索结果判断是否需要继续
-4. **步骤缓存优化**：避免LLM响应缓存冲突
-5. **Context更新修复**：确保每步后更新上下文状态
-6. **合并思考-决策-反思**：从每步2-3次LLM调用减少到1次，大幅提升速度
-7. **对话历史增强**：自动获取最近3轮对话上下文
-8. **多维度置信度计算**：文档数量+相似度+问题覆盖度+来源标注
-9. **异步执行支持**：添加arun异步执行方法
-10. **降级策略**：LLM调用失败时使用默认逻辑
-11. **工具参数自动补充**：确保必需参数（query、question_type）不被遗漏
-12. **早停机制**：检索到足够文档时提前终止，减少等待时间
-13. **max_steps优化**：从10步减少到5步
+1. **智能预判机制**：非医疗问题直接返回友好回答，避免无意义检索
+2. **ReAct推理循环**：思考→行动→观察→反思的智能决策
+3. **工具调用**：Agent自主选择调用安全检查/检索/追问等工具
+4. **反思机制**：基于检索结果判断是否需要继续
+5. **步骤缓存优化**：避免LLM响应缓存冲突
+6. **Context更新修复**：确保每步后更新上下文状态
+7. **合并思考-决策-反思**：从每步2-3次LLM调用减少到1次，大幅提升速度
+8. **对话历史增强**：自动获取最近3轮对话上下文
+9. **多维度置信度计算**：文档数量+相似度+问题覆盖度+来源标注
+10. **异步执行支持**：添加arun异步执行方法
+11. **降级策略**：LLM调用失败时使用默认逻辑
+12. **工具参数自动补充**：确保必需参数（query、question_type）不被遗漏
+13. **早停机制**：检索到足够文档时提前终止，减少等待时间
+14. **max_steps优化**：从10步减少到5步
 
 #### 后端优化
 1. **统计模块异步写入**：后台定时刷新，避免频繁I/O
@@ -615,7 +689,7 @@ python test_health.py
 8. **多轮对话优化**：历史长度控制
 9. **API限流机制**：保护后端服务
 10. **两阶段检索**：初始召回 + 重排序，提升检索精度
-11. **问题类型检测**：自动识别问题类型（中英文双语支持）
+11. **问题类型检测**：自动识别问题类型（中英文双语支持，含非医疗问题）
 12. **置信度计算**：始终显示知识库匹配度百分比
 13. **LLM响应缓存**：基于问题哈希的响应缓存
 14. **文档分块缓存**：基于内容哈希的分块结果缓存
@@ -631,6 +705,7 @@ python test_health.py
 24. **QAService重构**：提取公共方法(_analyze_query, _build_response)减少重复代码
 25. **API错误处理完善**：更详细的HTTP状态码和错误信息
 26. **文档向量添加修复**：修复ChromaDB ids参数未传递问题
+27. **文档上传同步处理**：改为同步返回结果，修复重复上传前端无提示问题
 
 #### 前端优化
 1. **API客户端超时配置**：类常量统一管理超时参数
@@ -639,7 +714,10 @@ python test_health.py
 4. **Agent模式切换**：UI支持Pipeline/Agent模式切换
 5. **知识库状态同步**：删除/清空知识库后自动刷新缓存
 6. **UI组件模块化**：提取可复用组件(app/components.py)
-7. **SSE解析优化**：统一解析方法支持多种消息类型
+7. **前端常量提取**：统一管理常量(app/constants.py)
+8. **SSE解析优化**：统一解析方法支持多种消息类型
+9. **清空知识库二次确认**：添加确认弹窗，防止误操作
+10. **文档上传同步处理**：修复重复上传无提示问题
 
 #### 日志系统优化
 1. **结构化JSON日志**：支持导出为JSON格式，方便ELK/Graylog分析
@@ -670,6 +748,9 @@ python test_health.py
 10. **Agent模式**：在前端界面可切换Pipeline RAG / Agentic RAG 模式
 11. **结构化日志**：设置 `USE_STRUCTURED_LOG=true` 启用JSON格式日志
 12. **Agent响应速度**：Agent模式已优化（max_steps=5+早停机制），但LLM响应速度取决于本地Ollama服务性能
+13. **文档上传**：上传接口采用同步处理，大文件可能需要等待较长时间
+14. **知识库清除**：清除操作有二次确认，请谨慎操作
+15. **智能预判**：Agent模式会自动识别非医疗问题并返回友好回答，无需手动判断
 
 ---
 
@@ -709,3 +790,14 @@ python test_health.py
   - 优化Agent响应速度（max_steps 10→5+早停机制）
   - LLM参数优化（TEMPERATURE=0.2, MAX_TOKENS=1536）
   - 配置解析安全化（添加_safe_int等方法）
+- v0.3.4 - **前端交互优化版本**
+  - 修复Path导入问题（rag/core/engine.py）
+  - 修复重复上传文档前端无提示问题（改为同步处理）
+  - 修复清空知识库无二次确认问题（与知识库管理页面对齐）
+  - 优化文档索引块数统计显示
+- v0.3.5 - **智能预判版本**
+  - 添加Agent智能预判机制（非医疗问题直接返回友好回答）
+  - 问题类型检测增强（支持greeting和off_topic识别）
+  - 添加问候语和非医疗话题关键词
+  - 前端常量提取（app/constants.py）
+  - 修复AgentResult参数错误问题

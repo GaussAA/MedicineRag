@@ -347,6 +347,14 @@ async def stream_agent_qa(
                     })
                     yield f"data: {conf_data}\n\n"
                     
+                    # 发送免责声明
+                    if result.disclaimer:
+                        disclaimer_data = json.dumps({
+                            "type": "disclaimer",
+                            "data": result.disclaimer
+                        }, ensure_ascii=False)
+                        yield f"data: {disclaimer_data}\n\n"
+                    
                 finally:
                     loop.close()
                 

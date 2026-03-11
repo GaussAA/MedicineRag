@@ -10,18 +10,16 @@ from typing import Optional, List, Dict, Any, Generator
 from urllib.parse import urljoin
 
 from backend.config import config
-
-# 默认API地址
-DEFAULT_API_BASE_URL = "http://localhost:8000"
+from app.constants import DEFAULT_API_BASE_URL, DEFAULT_TIMEOUT, STREAM_TIMEOUT, UPLOAD_TIMEOUT
 
 
 class APIClient:
     """API客户端（优化版）"""
     
-    # 默认超时配置
-    DEFAULT_TIMEOUT = 30  # 默认超时30秒
-    STREAM_TIMEOUT = 300  # 流式问答超时5分钟
-    UPLOAD_TIMEOUT = 600  # 文件上传超时10分钟
+    # 默认超时配置（保留类常量以保持向后兼容）
+    DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
+    STREAM_TIMEOUT = STREAM_TIMEOUT
+    UPLOAD_TIMEOUT = UPLOAD_TIMEOUT
     
     def __init__(self, base_url: str = None):
         """初始化API客户端
@@ -121,6 +119,8 @@ class APIClient:
                                     yield f"__STEPS__: {json.dumps(json_data.get('data', {}))}"
                                 elif msg_type == 'steps' and yield_steps:
                                     yield f"__STEPS__: {json.dumps(json_data.get('data', []))}"
+                                elif msg_type == 'disclaimer':
+                                    yield f"__DISCLAIMER__: {json.dumps(json_data.get('data', ''))}"
                             except json.JSONDecodeError:
                                 pass
                         # 处理纯文本

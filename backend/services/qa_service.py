@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 
 # 查询分析缓存（安全检查+问题类型检测结果）
 _query_analysis_cache: OrderedDict = OrderedDict()
-_QUERY_CACHE_MAX_SIZE = 100  # 最多缓存100个查询结果
 
 
 @dataclass
@@ -122,7 +121,7 @@ class QAService:
             "is_emergency": is_emergency
         }
         # LRU淘汰
-        if len(_query_analysis_cache) > _QUERY_CACHE_MAX_SIZE:
+        if len(_query_analysis_cache) > config.QUERY_CACHE_SIZE:
             _query_analysis_cache.popitem(last=False)
 
     def ask(self, request: QARequest) -> QAResponse:

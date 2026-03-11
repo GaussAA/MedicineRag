@@ -218,13 +218,13 @@ class DocService:
                 # 获取文件信息
                 stat = file_path.stat()
                 documents.append({
+                    "doc_id": file_path.name,  # 添加doc_id字段，与前端期望一致
                     "name": file_path.name,
                     "size": stat.st_size,  # 原始字节大小（整数）
                     "size_formatted": self._format_file_size(stat.st_size),  # 格式化大小（字符串）
                     "modified": self._format_date(stat.st_mtime),
                     "type": file_path.suffix.lower()
                 })
-
         return sorted(documents, key=lambda x: x["modified"], reverse=True)
 
     def delete_document(self, file_name: str) -> Dict[str, Any]:

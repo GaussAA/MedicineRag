@@ -4,6 +4,7 @@
 """
 
 import json
+import threading
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -330,11 +331,14 @@ class ConversationMemory:
 
 # 全局单例
 _memory_instance: Optional[ConversationMemory] = None
+_memory_lock = threading.Lock()
 
 
 def get_conversation_memory() -> ConversationMemory:
-    """获取对话记忆单例"""
+    """获取对话记忆单例（线程安全）"""
     global _memory_instance
     if _memory_instance is None:
-        _memory_instance = ConversationMemory()
+        with _memory_lock:
+            if _memory_instance is None:
+                _memory_instance = ConversationMemory()
     return _memory_instance

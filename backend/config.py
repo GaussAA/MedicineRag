@@ -59,6 +59,14 @@ class Config:
     TOP_K: int = _safe_int(os.getenv("TOP_K", ""), 5, "TOP_K")
     SIMILARITY_THRESHOLD: float = _safe_float(os.getenv("SIMILARITY_THRESHOLD", ""), 0.3, "SIMILARITY_THRESHOLD")
     
+    # 置信度阈值配置
+    CONFIDENCE_HIGH: float = _safe_float(os.getenv("CONFIDENCE_HIGH", ""), 0.7, "CONFIDENCE_HIGH")  # 高置信度阈值
+    CONFIDENCE_MEDIUM: float = _safe_float(os.getenv("CONFIDENCE_MEDIUM", ""), 0.5, "CONFIDENCE_MEDIUM")  # 中置信度阈值
+    
+    # Agent配置
+    MIN_DOCS_FOR_ANSWER: int = _safe_int(os.getenv("MIN_DOCS_FOR_ANSWER", ""), 2, "MIN_DOCS_FOR_ANSWER")  # Agent最少检索文档数
+    AGENT_MAX_STEPS: int = _safe_int(os.getenv("AGENT_MAX_STEPS", ""), 5, "AGENT_MAX_STEPS")  # Agent最大推理步数
+    
     # Embedding配置
     EMBEDDING_MAX_LENGTH: int = _safe_int(os.getenv("EMBEDDING_MAX_LENGTH", ""), 2000, "EMBEDDING_MAX_LENGTH")  # embedding时的文本截断长度
     
@@ -95,6 +103,9 @@ class Config:
     ENABLE_EMBEDDING_CACHE: bool = _safe_bool(os.getenv("ENABLE_EMBEDDING_CACHE", ""), True, "ENABLE_EMBEDDING_CACHE")
     EMBEDDING_CACHE_SIZE: int = _safe_int(os.getenv("EMBEDDING_CACHE_SIZE", ""), 100, "EMBEDDING_CACHE_SIZE")
     EMBEDDING_CACHE_DIR: str = os.getenv("EMBEDDING_CACHE_DIR", "./data/embedding_cache")
+    
+    # 查询分析缓存配置
+    QUERY_CACHE_SIZE: int = _safe_int(os.getenv("QUERY_CACHE_SIZE", ""), 100, "QUERY_CACHE_SIZE")
 
     # 分块策略配置
     CHUNK_BY_TITLE: bool = _safe_bool(os.getenv("CHUNK_BY_TITLE", ""), True, "CHUNK_BY_TITLE")

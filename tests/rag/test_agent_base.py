@@ -124,8 +124,9 @@ class TestAgentConfig:
         
         config = MedicalAgentConfig()
         
-        assert config.max_steps == 10
-        assert config.temperature == 0.2
+        # 使用配置默认值
+        assert config.max_steps == 5  # 默认来自 config.AGENT_MAX_STEPS
+        assert config.temperature == 0.1  # 默认来自 config.LLM_TEMPERATURE
         assert config.timeout == 300
         assert config.enable_reflection is True
         assert config.enable_followup is True
