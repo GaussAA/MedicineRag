@@ -49,13 +49,13 @@ async def upload_document(
     file: UploadFile = File(...),
     doc_service: DocService = Depends(get_doc_service)
 ):
-    """上传文档接口（异步后台处理）
+    """上传文档接口（同步处理）
     
     Args:
         file: 上传的文件
         
     Returns:
-        UploadResponse: 上传结果（立即返回，文档处理在后台进行）
+        UploadResponse: 上传结果（同步返回处理结果）
     """
     try:
         # 保存上传的文件
@@ -73,14 +73,20 @@ async def upload_document(
         file_size_mb = len(content) / (1024 * 1024)
         logger.info(f"上传文件大小: {file_size_mb:.2f}MB")
         
-        # 使用线程池异步处理
-        _executor.submit(_process_document_task, doc_service, tmp_path, file.filename)
+        # 同步处理文档（立即返回结果）
+        result = doc_service.upload_document(tmp_path, file.filename)
+        
+        # 清理临时文件
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         
         return UploadResponse(
-            status="processing",
-            message=f"文件正在后台处理中...",
+            status=result.get("status", "error"),
+            message=result.get("message", "上传失败"),
             file_name=file.filename,
-            doc_count=None
+            doc_count=result.get("doc_count")
         )
     except Exception as e:
         logger.error(f"上传文档错误: {e}", exc_info=True)

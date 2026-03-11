@@ -155,17 +155,36 @@ def show_sidebar():
                         st.error(f"重建失败: {e}")
 
         with col2:
-            if st.button("清空知识库"):
-                with st.spinner("正在清空..."):
-                    try:
-                        result = api_client.clear_knowledge_base()
-                        if result.get("status") == "success":
-                            st.success(result.get("message", "清空成功"))
-                            st.rerun()
-                        else:
-                            st.error(result.get("message", "清空失败"))
-                    except Exception as e:
-                        st.error(f"清空失败: {e}")
+            # 添加二次确认机制
+            if "show_clear_confirm" not in st.session_state:
+                st.session_state.show_clear_confirm = False
+            
+            if st.session_state.show_clear_confirm:
+                st.warning("⚠️ 确定要清空知识库吗？此操作不可恢复！")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ 确认清空", type="primary"):
+                        with st.spinner("正在清空..."):
+                            try:
+                                result = api_client.clear_knowledge_base()
+                                if result.get("status") == "success":
+                                    st.success(result.get("message", "清空成功"))
+                                    # 清除stats缓存
+                                    st.session_state._stats_cache = {"data": None, "timestamp": 0}
+                                    st.session_state.show_clear_confirm = False
+                                    st.rerun()
+                                else:
+                                    st.error(result.get("message", "清空失败"))
+                            except Exception as e:
+                                st.error(f"清空失败: {e}")
+                with col_no:
+                    if st.button("❌ 取消"):
+                        st.session_state.show_clear_confirm = False
+                        st.rerun()
+            else:
+                if st.button("🗑️ 清空知识库"):
+                    st.session_state.show_clear_confirm = True
+                    st.rerun()
 
         st.divider()
 

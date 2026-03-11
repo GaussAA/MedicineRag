@@ -72,11 +72,29 @@ class RetrieverTool:
             }
             
             for i, doc in enumerate(docs):
+                # 获取完整的元数据
+                metadata = doc.get("metadata", {})
+                title = metadata.get("title", "")
+                file_name = metadata.get("file_name", "")
+                
+                # 构建更丰富的文档信息
+                doc_text = doc.get("text", "")
+                
+                # 如果有标题，在文本前添加标题作为上下文
+                if title:
+                    display_text = f"【{title}】{doc_text}"
+                else:
+                    display_text = doc_text
+                
                 doc_info = {
                     "index": i + 1,
-                    "text": doc.get("text", "")[:500],  # 限制长度
+                    "text": display_text[:1000],  # 增加文本长度到1000字符
+                    "text_full_length": len(doc_text),  # 记录完整长度
+                    "title": title,
+                    "file_name": file_name,
+                    "chunk_id": metadata.get("chunk_id", ""),
                     "score": doc.get("score"),
-                    "metadata": doc.get("metadata", {})
+                    "metadata": metadata
                 }
                 result["documents"].append(doc_info)
                 

@@ -8,6 +8,7 @@
 import os
 import hashlib
 import threading
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 # 禁用代理 - 确保Ollama本地调用不受代理影响
@@ -256,13 +257,18 @@ class RAGEngine:
                 embedding = self._get_embedding(chunk_text)
                 doc_id = f"doc_{i}_{abs(hash(chunk_text)) % 100000}"
 
+                # 构建完整的metadata，包含标题和位置信息
                 metadata = {
                     "file_path": file_path,
+                    "file_name": Path(file_path).name,
                     "chunk_id": i,
-                    "char_count": len(chunk_text)
+                    "char_count": len(chunk_text),
+                    "title": chunk.get("title", ""),  # 添加标题信息
+                    "position": chunk.get("position", i)  # 添加位置信息
                 }
-                if chunk.get("title"):
-                    metadata["title"] = chunk["title"]
+                # 过滤掉空的title
+                if not metadata["title"]:
+                    del metadata["title"]
 
                 documents.append(chunk_text)
                 embeddings.append(embedding)
@@ -418,11 +424,22 @@ class RAGEngine:
                 display_score = None
 
             text = doc.get('text', '')
+            metadata = doc.get('metadata', {})
+            title = metadata.get('title', '')
+            
+            # 构建来源信息
+            source_name = metadata.get("file_name", metadata.get("source", metadata.get("file_path", "未知")))
+            
+            # 如果有标题，添加到内容前面
+            if title:
+                display_content = f"【{title}】{text}"
+            else:
+                display_content = text
+            
             sources.append({
-                "content": text[:200] + "..." if len(text) > 200 else text,
-                "source": doc.get('metadata', {}).get("file_name",
-                    doc.get('metadata', {}).get("source",
-                    doc.get('metadata', {}).get("file_path", "未知"))),
+                "content": display_content[:400] + "..." if len(display_content) > 400 else display_content,
+                "source": source_name,
+                "title": title,  # 添加标题字段
                 "score": display_score
             })
         return sources

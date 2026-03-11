@@ -10,13 +10,13 @@
 | ------------ | --------------------------- |
 | 前端框架     | Streamlit 1.30+             |
 | RAG框架      | LlamaIndex 0.10+            |
-| 向量数据库   | ChromaDB 0.4+               |
-| LLM          | Ollama qwen3:8b             |
-| Embedding    | BGE-M3:latest               |
+| 向量数据库   | ChromaDB 0.4+              |
+| LLM          | Ollama qwen3:8b            |
+| Embedding    | BGE-M3:latest              |
 | 重排序模型   | BGE-Reranker-v2-m3:latest   |
 | Agent框架    | 自研ReAct + LangChain Tools |
 | PDF解析      | pymupdf4llm (开源)          |
-| API框架      | FastAPI 0.100+              |
+| API框架      | FastAPI 0.100+             |
 | python包管理 | uv                          |
 
 ---
@@ -28,7 +28,7 @@ MedicineRag/
 ├── app/                    # Streamlit Web应用（前端）
 │   ├── main.py             # 主问答页面（支持Agent模式切换）
 │   ├── api_client.py       # API客户端（支持Agent API + SSE解析优化）
-│   ├── components.py       # 可复用UI组件（新增）
+│   ├── components.py       # 可复用UI组件
 │   └── pages/
 │       ├── knowledge.py    # 知识库管理页面
 │       └── analytics.py    # 系统统计页面
@@ -47,8 +47,8 @@ MedicineRag/
 │   │       └── docs.py   # 文档管理API
 │   └── services/          # 服务层
 │       ├── qa_service.py           # 问答服务（含查询缓存+公共方法重构）
-│       ├── doc_service.py         # 文档管理服务（含哈希缓存）
-│       ├── security_service.py    # 安全检查服务
+│       ├── doc_service.py          # 文档管理服务（含哈希缓存）
+│       ├── security_service.py     # 安全检查服务
 │       ├── question_type_detector.py # 问题类型检测
 │       └── confidence_calculator.py # 置信度计算
 │
@@ -125,6 +125,7 @@ MedicineRag/
 │   ├── storage/          # LlamaIndex存储
 │   └── qa_stats.json    # 问答统计文件
 │
+├── test_health.py         # 健康检查脚本
 ├── .env                  # 环境配置
 ├── .env.example          # 环境配置模板
 ├── pyproject.toml        # 项目配置
@@ -195,6 +196,7 @@ python scripts/stop_all.py
 - **ReAct推理模式（优化版）**：思考+决策+反思合并为单次LLM调用，大幅提升响应速度
 - **工具调用**：Agent自主决定调用哪些工具
 - **动态决策**：根据检索结果决定是否需要补充检索
+- **早停机制**：当检索到足够文档时提前终止，减少等待时间
 - **知识缺口识别**：自动识别知识库薄弱领域
 - **对话历史增强**：自动获取最近3轮对话上下文
 
@@ -254,8 +256,9 @@ RAG核心采用Facade模式和依赖注入：
    - 追问工具：生成跟进问题
    - 知识缺口工具：识别知识库薄弱领域
 5. **反思步骤**：判断结果是否足够
-6. 生成最终回答
-7. 返回回答 + 推理步骤 + 参考来源 + 置信度 + 追问问题 + 知识缺口
+6. **早停检查**：已有足够文档时提前退出
+7. 生成最终回答
+8. 返回回答 + 推理步骤 + 参考来源 + 置信度 + 追问问题 + 知识缺口
 
 ### Agent工具集
 
@@ -408,18 +411,18 @@ SIMILARITY_THRESHOLD=0.3
 # ============================================================================
 # LLM生成参数
 # ============================================================================
-LLM_TEMPERATURE=0.1
-LLM_MAX_TOKENS=512
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=1536
 
 # ============================================================================
-# 对话历史控制参数（v0.3.1+ 新增）
+# 对话历史控制参数
 # ============================================================================
 MAX_HISTORY_TURNS=5
 MAX_ANSWER_LENGTH=300
 MAX_CONTEXT_LENGTH=1500
 
 # ============================================================================
-# 日志配置（v0.3.1+ 增强）
+# 日志配置
 # ============================================================================
 LOG_LEVEL=INFO
 LOG_FILE=./data/logs/app.log
@@ -526,6 +529,16 @@ class ConversationMemory:
         ...
 ```
 
+### Agent参数自动补充 (rag/agents/medical_agent.py)
+
+```python
+class MedicalAgent:
+    def _ensure_required_params(self, action: str, action_input: Dict) -> Dict:
+        """确保工具调用包含必需的参数"""
+        # 自动补充缺失的query、question_type等参数
+        ...
+```
+
 ---
 
 ## 测试
@@ -549,6 +562,9 @@ pytest tests/rag/ -v          # RAG核心测试
 python tests/scripts/test_rag.py
 python tests/scripts/test_rerank.py
 python tests/scripts/test_load.py
+
+# 健康检查
+python test_health.py
 ```
 
 ### 测试覆盖
@@ -584,6 +600,9 @@ python tests/scripts/test_load.py
 8. **多维度置信度计算**：文档数量+相似度+问题覆盖度+来源标注
 9. **异步执行支持**：添加arun异步执行方法
 10. **降级策略**：LLM调用失败时使用默认逻辑
+11. **工具参数自动补充**：确保必需参数（query、question_type）不被遗漏
+12. **早停机制**：检索到足够文档时提前终止，减少等待时间
+13. **max_steps优化**：从10步减少到5步
 
 #### 后端优化
 1. **统计模块异步写入**：后台定时刷新，避免频繁I/O
@@ -605,12 +624,13 @@ python tests/scripts/test_load.py
 17. **降级处理**：LLM失败时返回检索到的资料
 18. **相似度阈值过滤**：实际应用SIMILARITY_THRESHOLD配置
 19. **同义词扩展**：60+组医学同义词词典
-20. **LLM参数优化**：TEMPERATURE=0.1, MAX_TOKENS=512，提升响应速度
+20. **LLM参数优化**：TEMPERATURE=0.2, MAX_TOKENS=1536
 21. **缓存统计记录**：自动记录LLM缓存命中/未命中统计
 22. **统一缓存接口**：抽象基类+TTL支持+统一持久化
 23. **RAGEngine依赖注入**：支持非单例创建和自定义组件注入
 24. **QAService重构**：提取公共方法(_analyze_query, _build_response)减少重复代码
 25. **API错误处理完善**：更详细的HTTP状态码和错误信息
+26. **文档向量添加修复**：修复ChromaDB ids参数未传递问题
 
 #### 前端优化
 1. **API客户端超时配置**：类常量统一管理超时参数
@@ -621,13 +641,14 @@ python tests/scripts/test_load.py
 6. **UI组件模块化**：提取可复用组件(app/components.py)
 7. **SSE解析优化**：统一解析方法支持多种消息类型
 
-#### 日志系统优化 (v0.3.1+)
+#### 日志系统优化
 1. **结构化JSON日志**：支持导出为JSON格式，方便ELK/Graylog分析
 2. **日志轮转配置化**：LOG_MAX_BYTES、LOG_BACKUP_COUNT可配置
 3. **请求级别追踪**：基于ContextVar的请求ID追踪
 4. **敏感信息脱敏**：自动过滤身份证、手机号、银行卡、邮箱
+5. **配置解析安全化**：添加安全解析方法，避免空值导致异常
 
-#### 增强统计指标 (v0.3.1+)
+#### 增强统计指标
 1. **每小时问答量**：按小时统计问答数量
 2. **响应时间百分位数**：P50/P95/P99延迟统计
 3. **最大/最小响应时间**：记录响应时间范围
@@ -648,6 +669,7 @@ python tests/scripts/test_load.py
 9. **PDF解析**：默认使用 pymupdf4llm（免费开源）
 10. **Agent模式**：在前端界面可切换Pipeline RAG / Agentic RAG 模式
 11. **结构化日志**：设置 `USE_STRUCTURED_LOG=true` 启用JSON格式日志
+12. **Agent响应速度**：Agent模式已优化（max_steps=5+早停机制），但LLM响应速度取决于本地Ollama服务性能
 
 ---
 
@@ -681,3 +703,9 @@ python tests/scripts/test_load.py
   - 对话历史控制参数（MAX_HISTORY_TURNS等）
   - 增强统计指标（每小时问答量、P50/P95/P99延迟）
   - 完善.env.example配置文件
+- v0.3.3 - **Agent性能优化版本**
+  - 修复文档上传ChromaDB ids参数问题
+  - 修复Agent工具参数传递问题
+  - 优化Agent响应速度（max_steps 10→5+早停机制）
+  - LLM参数优化（TEMPERATURE=0.2, MAX_TOKENS=1536）
+  - 配置解析安全化（添加_safe_int等方法）
