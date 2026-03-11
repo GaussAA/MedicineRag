@@ -1,8 +1,12 @@
 """医疗知识问答系统 - 主页面"""
 
+import logging
 import streamlit as st
 
 from app.api_client import get_api_client
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 # 页面配置
@@ -90,7 +94,8 @@ def show_sidebar():
             try:
                 cache["data"] = api_client.get_stats()
                 cache["timestamp"] = current_time
-            except:
+            except Exception as e:
+                logger.warning(f"获取统计信息失败: {e}")
                 cache["data"] = None
         
         stats = cache["data"]

@@ -110,23 +110,34 @@ class SensitiveDataFormatter(logging.Formatter):
 
 
 def setup_logging(
-    log_level: str = "INFO",
-    log_file: Optional[str] = None,
+    log_level: str = None,
+    log_file: str = None,
     log_format: Optional[str] = None,
-    use_structured: bool = False
+    use_structured: bool = None,
+    max_bytes: int = None,
+    backup_count: int = None
 ) -> logging.Logger:
     """
     统一日志配置
     
     Args:
-        log_level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_file: 日志文件路径，如果为None则只输出到控制台
+        log_level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)，默认从配置读取
+        log_file: 日志文件路径，默认从配置读取
         log_format: 自定义日志格式
-        use_structured: 是否使用结构化JSON日志格式
+        use_structured: 是否使用结构化JSON日志格式，默认从配置读取
+        max_bytes: 日志文件最大字节数，默认从配置读取
+        backup_count: 日志备份数量，默认从配置读取
     
     Returns:
         配置好的logger对象
     """
+    # 从配置读取默认值
+    from backend.config import config
+    log_level = log_level or config.LOG_LEVEL
+    log_file = log_file or config.LOG_FILE
+    use_structured = use_structured if use_structured is not None else config.USE_STRUCTURED_LOG
+    max_bytes = max_bytes or config.LOG_MAX_BYTES
+    backup_count = backup_count or config.LOG_BACKUP_COUNT
     # 默认日志格式
     default_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
     log_format = log_format or default_format
@@ -159,11 +170,11 @@ def setup_logging(
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 使用RotatingFileHandler，单个文件最大10MB，保留5个备份
+        # 使用RotatingFileHandler，支持日志轮转
         file_handler = RotatingFileHandler(
             log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)

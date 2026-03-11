@@ -4,8 +4,8 @@ import pytest
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from dataclasses import asdict
 
-from rag.agents.base import AgentState, AgentConfig
-from rag.agents.medical_agent import MedicalAgent, AgentConfig as MedicalAgentConfig
+from rag.agents.base import AgentState
+from rag.agents.medical_agent import MedicalAgent, AgentConfig
 
 
 class MockRAGEngine:
@@ -96,7 +96,7 @@ def medical_agent(
     mock_confidence_calculator
 ):
     """创建MedicalAgent实例"""
-    config = MedicalAgentConfig(
+    config = AgentConfig(
         max_steps=3,
         timeout=60,
         enable_reflection=True,

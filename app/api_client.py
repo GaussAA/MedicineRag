@@ -60,15 +60,104 @@ class APIClient:
         """获取完整URL"""
         return urljoin(self.base_url, path)
     
+    # ==================== SSE 解析辅助方法 ====================
+
+    def _parse_sse_stream(
+        self,
+        response: requests.Response,
+        yield_content: bool = True,
+        yield_sources: bool = True,
+        yield_followup: bool = True,
+        yield_knowledge_gaps: bool = True,
+        yield_confidence: bool = True,
+        yield_steps: bool = False
+    ) -> Generator[str, None, None]:
+        """解析SSE流式响应
+
+        Args:
+            response: requests.Response对象
+            yield_content: 是否yield内容
+            yield_sources: 是否yield来源
+            yield_followup: 是否yield追问
+            yield_knowledge_gaps: 是否yield知识缺口
+            yield_confidence: 是否yield置信度
+            yield_steps: 是否yield推理步骤
+
+        Yields:
+            流式返回的数据片段
+        """
+        buffer = ""
+        for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+            if chunk:
+                buffer += chunk
+
+                while '\n\n' in buffer:
+                    line, buffer = buffer.split('\n\n', 1)
+                    if line.startswith('data: '):
+                        data = line[6:]
+
+                        # 处理JSON格式的SSE数据
+                        if data.startswith('{') and data.endswith('}'):
+                            try:
+                                json_data = json.loads(data)
+                                msg_type = json_data.get('type')
+
+                                if msg_type == 'error':
+                                    yield f"\n\n错误: {json_data.get('message', '未知错误')}"
+                                    return
+                                elif msg_type == 'done':
+                                    return
+                                elif msg_type == 'source' and yield_sources:
+                                    yield f"__SOURCE__: {json.dumps(json_data.get('data', {}))}"
+                                elif msg_type == 'content' and yield_content and json_data.get('content'):
+                                    yield json_data['content']
+                                elif msg_type == 'followup' and yield_followup:
+                                    yield f"__FOLLOWUP__: {json.dumps(json_data.get('data', []))}"
+                                elif msg_type == 'knowledge_gap' and yield_knowledge_gaps:
+                                    yield f"__KNOWLEDGE_GAPS__: {json.dumps(json_data.get('data', []))}"
+                                elif msg_type == 'confidence' and yield_confidence:
+                                    yield f"__CONFIDENCE__: {json.dumps(json_data.get('data', 0.0))}"
+                                elif msg_type == 'step' and yield_steps:
+                                    yield f"__STEPS__: {json.dumps(json_data.get('data', {}))}"
+                                elif msg_type == 'steps' and yield_steps:
+                                    yield f"__STEPS__: {json.dumps(json_data.get('data', []))}"
+                            except json.JSONDecodeError:
+                                pass
+                        # 处理纯文本
+                        elif data and data != '[DONE]':
+                            yield data
+
+    def _handle_request_error(self, error: Exception) -> str:
+        """处理请求错误，返回错误消息
+
+        Args:
+            error: 异常对象
+
+        Returns:
+            错误消息字符串
+        """
+        if isinstance(error, requests.exceptions.ConnectionError):
+            return "无法连接到后端服务，请确保API服务正在运行。"
+        elif isinstance(error, requests.exceptions.Timeout):
+            return "请求超时，请稍后重试。"
+        elif isinstance(error, requests.exceptions.HTTPError):
+            try:
+                error_detail = error.response.json().get("detail", str(error))
+            except Exception:
+                error_detail = str(error)
+            return f"服务器错误: {error_detail}"
+        else:
+            return f"发生错误: {str(error)}"
+
     # ==================== 问答相关 ====================
-    
+
     def ask_stream(self, question: str, history: Optional[List[Dict[str, str]]] = None) -> Generator[str, None, None]:
         """流式问答
-        
+
         Args:
             question: 用户问题
             history: 对话历史
-            
+
         Yields:
             流式返回的回答片段
         """
@@ -77,49 +166,24 @@ class APIClient:
             "question": question,
             "history": history or []
         }
-        
+
         try:
-            # 使用 request 方法并设置 stream=True
             response = self.session.request(
-                "POST", url, json=payload, 
-                timeout=self.STREAM_TIMEOUT,  # 使用类常量
+                "POST", url, json=payload,
+                timeout=self.STREAM_TIMEOUT,
                 stream=True
             )
             response.raise_for_status()
-                
-            # 处理SSE流式响应
-            buffer = ""
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-                if chunk:
-                    buffer += chunk
-                    
-                    # 处理SSE格式: data: {...}\n\n
-                    while '\n\n' in buffer:
-                        line, buffer = buffer.split('\n\n', 1)
-                        if line.startswith('data: '):
-                            data = line[6:]  # 去掉 'data: ' 前缀
-                            
-                            # 处理JSON格式的SSE数据
-                            if data.startswith('{') and data.endswith('}'):
-                                try:
-                                    json_data = json.loads(data)
-                                    msg_type = json_data.get('type')
-                                    
-                                    if msg_type == 'error':
-                                        yield f"\n\n错误: {json_data.get('message', '未知错误')}"
-                                        return
-                                    elif msg_type == 'done':
-                                        return
-                                    elif msg_type == 'source':
-                                        # sources单独处理，通过特殊格式返回
-                                        yield f"__SOURCE__: {json.dumps(json_data.get('data', {}))}"
-                                    elif msg_type == 'content' and json_data.get('content'):
-                                        yield json_data['content']
-                                except json.JSONDecodeError:
-                                    pass
-                            # 处理纯文本
-                            elif data and data != '[DONE]':
-                                yield data
+
+            # 使用统一的SSE解析方法
+            yield from self._parse_sse_stream(
+                response,
+                yield_sources=True,
+                yield_followup=False,
+                yield_knowledge_gaps=False,
+                yield_confidence=False,
+                yield_steps=False
+            )
         except requests.exceptions.ConnectionError:
             yield "无法连接到后端服务，请确保API服务正在运行。"
         except requests.exceptions.Timeout:
@@ -150,22 +214,22 @@ class APIClient:
     # ==================== Agent 问答 ====================
     
     def ask_agent_stream(
-        self, 
-        question: str, 
+        self,
+        question: str,
         history: Optional[List[Dict[str, str]]] = None,
         session_id: Optional[str] = None,
         enable_followup: bool = True,
         enable_knowledge_gap: bool = True
     ) -> Generator[str, None, None]:
         """流式 Agent 问答
-        
+
         Args:
             question: 用户问题
             history: 对话历史
             session_id: 会话ID
             enable_followup: 是否启用追问
             enable_knowledge_gap: 是否启用知识缺口识别
-            
+
         Yields:
             流式返回的回答片段
         """
@@ -177,51 +241,24 @@ class APIClient:
             "enable_followup": enable_followup,
             "enable_knowledge_gap": enable_knowledge_gap
         }
-        
+
         try:
             response = self.session.request(
-                "POST", url, json=payload, 
+                "POST", url, json=payload,
                 timeout=self.STREAM_TIMEOUT,
                 stream=True
             )
             response.raise_for_status()
-                
-            buffer = ""
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-                if chunk:
-                    buffer += chunk
-                    
-                    while '\n\n' in buffer:
-                        line, buffer = buffer.split('\n\n', 1)
-                        if line.startswith('data: '):
-                            data = line[6:]
-                            
-                            if data.startswith('{') and data.endswith('}'):
-                                try:
-                                    json_data = json.loads(data)
-                                    msg_type = json_data.get('type')
-                                    
-                                    if msg_type == 'error':
-                                        yield f"\n\n错误: {json_data.get('message', '未知错误')}"
-                                        return
-                                    elif msg_type == 'done':
-                                        return
-                                    elif msg_type == 'steps':
-                                        yield f"__STEPS__: {json.dumps(json_data.get('data', []))}"
-                                    elif msg_type == 'source':
-                                        yield f"__SOURCE__: {json.dumps(json_data.get('data', {}))}"
-                                    elif msg_type == 'followup':
-                                        yield f"__FOLLOWUP__: {json.dumps(json_data.get('data', []))}"
-                                    elif msg_type == 'knowledge_gaps':
-                                        yield f"__KNOWLEDGE_GAPS__: {json.dumps(json_data.get('data', []))}"
-                                    elif msg_type == 'confidence':
-                                        yield f"__CONFIDENCE__: {json_data.get('data')}"
-                                    elif msg_type == 'content' and json_data.get('content'):
-                                        yield json_data['content']
-                                except json.JSONDecodeError:
-                                    pass
-                            elif data and data != '[DONE]':
-                                yield data
+
+            # 使用统一的SSE解析方法（Agent模式支持所有消息类型）
+            yield from self._parse_sse_stream(
+                response,
+                yield_sources=True,
+                yield_followup=True,
+                yield_knowledge_gaps=True,
+                yield_confidence=True,
+                yield_steps=True
+            )
         except requests.exceptions.ConnectionError:
             yield "无法连接到后端服务，请确保API服务正在运行。"
         except requests.exceptions.Timeout:

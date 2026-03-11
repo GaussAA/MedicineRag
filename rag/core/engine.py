@@ -51,20 +51,98 @@ logger = get_logger(__name__)
 
 
 class RAGEngine:
-    """RAG引擎核心类 - Facade模式（线程安全单例）"""
+    """RAG引擎核心类 - Facade模式（线程安全单例）
+
+    支持两种使用方式：
+    1. 单例模式（默认）：通过 RAGEngine() 获取单例
+    2. 非单例模式：通过 RAGEngine.create_instance() 创建独立实例
+
+    组件访问：
+    - 通过 get_component() 方法访问内部组件
+    - 支持retriever, reranker, llm_manager, vector_store, document_processor, embedding_cache, llm_response_cache
+    """
 
     _instance: Optional['RAGEngine'] = None
     _initialized: bool = False
     _init_lock: threading.Lock = threading.Lock()
     _instance_lock: threading.Lock = threading.Lock()
 
-    def __new__(cls):
-        """线程安全的单例模式实现 - 双重检查锁定"""
+    def __new__(cls, force_new: bool = False):
+        """线程安全的单例模式实现 - 双重检查锁定
+
+        Args:
+            force_new: 强制创建新实例（不推荐用于生产环境，仅用于测试）
+        """
+        if force_new:
+            # 强制创建新实例
+            return super().__new__(cls)
+
         if cls._instance is None:
             with cls._init_lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
+
+    @classmethod
+    def create_instance(cls, **kwargs) -> 'RAGEngine':
+        """创建新的RAGEngine实例（非单例）
+
+        用于测试或需要多个独立引擎实例的场景。
+
+        Args:
+            **kwargs: 可选的组件参数
+                - ollama_client: 自定义Ollama客户端
+                - vector_store: 自定义向量存储管理器
+                - embedding_cache: 自定义Embedding缓存
+                - llm_response_cache: 自定义LLM响应缓存
+                - document_processor: 自定义文档处理器
+                - retriever: 自定义检索器
+                - reranker: 自定义重排序器
+                - llm_manager: 自定义LLM管理器
+
+        Returns:
+            新的RAGEngine实例
+        """
+        # 创建不触发单例逻辑的实例
+        instance = object.__new__(cls)
+
+        # 初始化实例锁
+        instance._instance_lock = threading.Lock()
+
+        # 初始化组件（使用提供的或创建新的）
+        instance._init_components(**kwargs)
+
+        logger.info("创建了新的RAGEngine实例（非单例）")
+        return instance
+
+    def get_component(self, component_name: str):
+        """获取内部组件
+
+        Args:
+            component_name: 组件名称
+                - retriever: 混合检索器
+                - reranker: 重排序器
+                - llm_manager: LLM管理器
+                - vector_store: 向量存储管理器
+                - document_processor: 文档处理器
+                - embedding_cache: Embedding缓存
+                - llm_response_cache: LLM响应缓存
+                - ollama_client: Ollama客户端
+
+        Returns:
+            组件实例，如果不存在返回None
+        """
+        component_map = {
+            'retriever': self.retriever,
+            'reranker': self.reranker,
+            'llm_manager': self.llm_manager,
+            'vector_store': self.vector_store,
+            'document_processor': self.document_processor,
+            'embedding_cache': self.embedding_cache,
+            'llm_response_cache': self.llm_response_cache,
+            'ollama_client': self.ollama_client,
+        }
+        return component_map.get(component_name)
 
     def __init__(self):
         """初始化 - 线程安全，只执行一次"""
@@ -81,34 +159,49 @@ class RAGEngine:
             RAGEngine._initialized = True
             logger.info("RAG引擎初始化完成（Facade模式）")
 
-    def _init_components(self) -> None:
-        """初始化所有组件"""
-        # 1. Ollama客户端
-        self.ollama_client = create_ollama_client()
+    def _init_components(self, **kwargs) -> None:
+        """初始化所有组件（支持依赖注入）
+
+        Args:
+            **kwargs: 可选的组件参数，用于自定义注入
+                - ollama_client: 自定义Ollama客户端
+                - vector_store: 自定义向量存储管理器
+                - embedding_cache: 自定义Embedding缓存
+                - llm_response_cache: 自定义LLM响应缓存
+                - document_processor: 自定义文档处理器
+                - retriever: 自定义检索器
+                - reranker: 自定义重排序器
+                - llm_manager: 自定义LLM管理器
+        """
+        # 1. Ollama客户端（优先使用传入的）
+        self.ollama_client = kwargs.get('ollama_client') or create_ollama_client()
 
         # 2. 向量存储管理器
-        self.vector_store = create_vector_store_manager()
+        self.vector_store = kwargs.get('vector_store') or create_vector_store_manager()
 
         # 3. Embedding缓存
-        self.embedding_cache = create_embedding_cache()
+        self.embedding_cache = kwargs.get('embedding_cache') or create_embedding_cache()
 
         # 4. LLM响应缓存
-        self.llm_response_cache = create_llm_response_cache()
+        self.llm_response_cache = kwargs.get('llm_response_cache') or create_llm_response_cache()
 
         # 5. 文档处理器
-        self.document_processor = create_document_processor()
+        self.document_processor = kwargs.get('document_processor') or create_document_processor()
 
-        # 6. 检索器（需要collection）
-        self.retriever = create_retriever(
-            ollama_client=self.ollama_client,
-            collection=self.vector_store.collection
-        )
+        # 6. 检索器（需要collection，优先使用传入的）
+        if 'retriever' in kwargs:
+            self.retriever = kwargs['retriever']
+        else:
+            self.retriever = create_retriever(
+                ollama_client=self.ollama_client,
+                collection=self.vector_store.collection
+            )
 
         # 7. 重排序器
-        self.reranker = create_reranker(self.ollama_client)
+        self.reranker = kwargs.get('reranker') or create_reranker(self.ollama_client)
 
         # 8. LLM管理器（组合缓存）
-        self.llm_manager = create_llm_manager(
+        self.llm_manager = kwargs.get('llm_manager') or create_llm_manager(
             ollama_client=self.ollama_client,
             cache=self.llm_response_cache
         )
@@ -146,6 +239,7 @@ class RAGEngine:
             documents = []
             embeddings = []
             metadatas = []
+            ids = []
             batch_size = 100
 
             for i, chunk in enumerate(chunks):
@@ -173,24 +267,28 @@ class RAGEngine:
                 documents.append(chunk_text)
                 embeddings.append(embedding)
                 metadatas.append(metadata)
+                ids.append(doc_id)
 
                 # 批量添加
                 if len(documents) >= batch_size:
                     self.vector_store.add_documents(
                         documents=documents,
                         embeddings=embeddings,
-                        metadatas=metadatas
+                        metadatas=metadatas,
+                        ids=ids
                     )
                     documents = []
                     embeddings = []
                     metadatas = []
+                    ids = []
 
             # 添加剩余批次
             if documents:
                 self.vector_store.add_documents(
                     documents=documents,
                     embeddings=embeddings,
-                    metadatas=metadatas
+                    metadatas=metadatas,
+                    ids=ids
                 )
 
             # 刷新embedding缓存

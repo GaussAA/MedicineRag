@@ -70,6 +70,11 @@ class Config:
     LLM_TEMPERATURE: float = _safe_float(os.getenv("LLM_TEMPERATURE", ""), 0.2, "LLM_TEMPERATURE")
     LLM_MAX_TOKENS: int = _safe_int(os.getenv("LLM_MAX_TOKENS", ""), 1536, "LLM_MAX_TOKENS")
 
+    # 对话历史控制参数
+    MAX_HISTORY_TURNS: int = _safe_int(os.getenv("MAX_HISTORY_TURNS", ""), 5, "MAX_HISTORY_TURNS")
+    MAX_ANSWER_LENGTH: int = _safe_int(os.getenv("MAX_ANSWER_LENGTH", ""), 300, "MAX_ANSWER_LENGTH")
+    MAX_CONTEXT_LENGTH: int = _safe_int(os.getenv("MAX_CONTEXT_LENGTH", ""), 1500, "MAX_CONTEXT_LENGTH")
+
     # 向量数据库配置
     CHROMA_PERSIST_DIRECTORY: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/chroma_db")
 
@@ -79,6 +84,9 @@ class Config:
     # 日志配置
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE: str = os.getenv("LOG_FILE", "./data/logs/app.log")
+    USE_STRUCTURED_LOG: bool = _safe_bool(os.getenv("USE_STRUCTURED_LOG", ""), False, "USE_STRUCTURED_LOG")
+    LOG_MAX_BYTES: int = _safe_int(os.getenv("LOG_MAX_BYTES", ""), 10 * 1024 * 1024, "LOG_MAX_BYTES")  # 默认10MB
+    LOG_BACKUP_COUNT: int = _safe_int(os.getenv("LOG_BACKUP_COUNT", ""), 5, "LOG_BACKUP_COUNT")
 
     # 集合名称
     COLLECTION_NAME: str = "medical_knowledge"

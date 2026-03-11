@@ -252,11 +252,102 @@ class TestSecurityService:
     def test_emergency_symptom(self):
         """测试紧急症状检测"""
         from backend.services.security_service import SecurityService
-        
+
         service = SecurityService()
-        
+
         assert service.is_emergency_symptom("胸痛呼吸困难") is True
         assert service.is_emergency_symptom("高血压饮食注意") is False
+
+
+class TestRAGEngineDependencyInjection:
+    """RAG引擎依赖注入测试"""
+
+    def setup_method(self):
+        """每个测试前重置单例"""
+        from rag.core.engine import RAGEngine
+        RAGEngine.reset()
+
+    @patch('rag.core.engine.OllamaClient')
+    @patch('rag.core.engine.chromadb.PersistentClient')
+    def test_create_instance_basic(self, mock_chroma, mock_ollama):
+        """测试create_instance基本功能"""
+        from rag.core.engine import RAGEngine
+
+        mock_ollama_instance = Mock()
+        mock_ollama.return_value = mock_ollama_instance
+        mock_chroma_instance = Mock()
+        mock_chroma.return_value = mock_chroma_instance
+
+        # 使用create_instance创建新实例
+        engine = RAGEngine.create_instance()
+
+        assert engine is not None
+        assert isinstance(engine, RAGEngine)
+
+    @patch('rag.core.engine.OllamaClient')
+    @patch('rag.core.engine.chromadb.PersistentClient')
+    def test_create_instance_different_from_singleton(self, mock_chroma, mock_ollama):
+        """测试create_instance创建独立于单例的实例"""
+        from rag.core.engine import RAGEngine
+
+        mock_ollama_instance = Mock()
+        mock_ollama.return_value = mock_ollama_instance
+        mock_chroma_instance = Mock()
+        mock_chroma.return_value = mock_chroma_instance
+
+        # 获取单例
+        singleton = RAGEngine()
+
+        # 创建新实例
+        new_instance = RAGEngine.create_instance()
+
+        # 两者应该是不同的对象
+        assert singleton is not new_instance
+
+    @patch('rag.core.engine.OllamaClient')
+    @patch('rag.core.engine.chromadb.PersistentClient')
+    def test_create_instance_with_custom_components(self, mock_chroma, mock_ollama):
+        """测试使用自定义组件创建实例"""
+        from rag.core.engine import RAGEngine
+
+        mock_ollama_instance = Mock()
+        mock_ollama.return_value = mock_ollama_instance
+        mock_chroma_instance = Mock()
+        mock_chroma.return_value = mock_chroma_instance
+
+        # 创建自定义组件
+        mock_retriever = Mock()
+        mock_reranker = Mock()
+
+        # 使用自定义组件创建实例
+        engine = RAGEngine.create_instance(
+            retriever=mock_retriever,
+            reranker=mock_reranker
+        )
+
+        # 验证自定义组件被使用
+        assert engine.retriever is mock_retriever
+        assert engine.reranker is mock_reranker
+
+    @patch('rag.core.engine.OllamaClient')
+    @patch('rag.core.engine.chromadb.PersistentClient')
+    def test_get_component(self, mock_chroma, mock_ollama):
+        """测试get_component方法"""
+        from rag.core.engine import RAGEngine
+
+        mock_ollama_instance = Mock()
+        mock_ollama.return_value = mock_ollama_instance
+        mock_chroma_instance = Mock()
+        mock_chroma.return_value = mock_chroma_instance
+
+        engine = RAGEngine()
+
+        # 测试获取各个组件
+        assert engine.get_component('retriever') is not None
+        assert engine.get_component('reranker') is not None
+        assert engine.get_component('llm_manager') is not None
+        assert engine.get_component('vector_store') is not None
+        assert engine.get_component('unknown') is None
 
 
 if __name__ == "__main__":

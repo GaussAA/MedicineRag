@@ -83,6 +83,14 @@ class BaseAgent(ABC):
         """获取已注册的工具"""
         return self._tools
 
+    def get_available_tools(self) -> List[str]:
+        """获取已注册的工具名称列表
+        
+        Returns:
+            List[str]: 工具名称列表
+        """
+        return list(self._tools.keys())
+
     @property
     def tool_schemas(self) -> List[Dict[str, Any]]:
         """获取工具 schema 定义"""
@@ -145,6 +153,21 @@ class BaseAgent(ABC):
                 answer=f"处理您的问题时出现错误: {str(e)}",
                 confidence=0.0
             )
+
+    async def arun(self, query: str, session_id: str = "default", **kwargs) -> AgentResult:
+        """异步执行 Agent 推理（execute 方法的别名）
+        
+        Args:
+            query: 用户查询
+            session_id: 会话ID
+            **kwargs: 其他上下文参数
+            
+        Returns:
+            AgentResult: 执行结果
+        """
+        context = kwargs.get("context", {})
+        context["session_id"] = session_id
+        return await self.execute(query, context)
 
     @abstractmethod
     async def _run_react_loop(self, query: str, context: Dict[str, Any]) -> AgentResult:

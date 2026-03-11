@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from backend.config import config
 from backend.api.models import (
     QARequest, QAResponse, StreamQARequest,
     ErrorResponse
@@ -30,23 +31,30 @@ router = APIRouter(prefix="/qa", tags=["问答"])
 @router.post("/ask", response_model=QAResponse)
 async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service)):
     """问答接口（非流式）
-    
+
     Args:
         request: 问答请求
-        
+
     Returns:
         QAResponse: 问答响应
     """
     try:
+        # 参数验证
+        if not request.question or not request.question.strip():
+            raise HTTPException(status_code=400, detail="问题不能为空")
+
+        if len(request.question) > 1000:
+            raise HTTPException(status_code=400, detail="问题长度不能超过1000字符")
+
         # 构建请求
         qa_request = QARequestModel(
             question=request.question,
             chat_history=request.history
         )
-        
+
         # 调用服务
         response = qa_service.ask(qa_request)
-        
+
         return QAResponse(
             answer=response.answer,
             sources=response.sources,
@@ -54,16 +62,21 @@ async def ask(request: QARequest, qa_service: QAService = Depends(get_qa_service
             question_type=response.question_type,
             confidence_level=response.confidence_level
         )
-        
+
     except VectorStoreError as e:
         logger.error(f"向量存储错误: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail=f"知识库服务暂不可用: {str(e)}")
+    except EmbeddingError as e:
+        logger.error(f"Embedding错误: {e}")
+        raise HTTPException(status_code=503, detail=f"向量化服务暂不可用: {str(e)}")
     except LLMException as e:
         logger.error(f"LLM错误: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail=f"AI服务暂不可用: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"问答错误: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"服务内部错误，请稍后重试")
 
 
 @router.post("/stream")
@@ -91,7 +104,7 @@ async def stream_qa(request: StreamQARequest, qa_service: QAService = Depends(ge
                 
                 # 预检索sources（在流式生成前获取）
                 try:
-                    retrieved_docs = qa_service.rag_engine.retrieve(request.question, top_k=5)
+                    retrieved_docs = qa_service.rag_engine.retrieve(request.question, top_k=config.TOP_K)
                     if retrieved_docs:
                         sources = qa_service.rag_engine.get_retrieved_sources(retrieved_docs)
                         # 先发送sources

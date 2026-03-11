@@ -58,18 +58,8 @@ class QAStats:
 
     def _load_stats(self) -> Dict[str, Any]:
         """加载统计数据"""
-        if self.stats_file.exists():
-            try:
-                with open(self.stats_file, 'r', encoding='utf-8') as f:
-                    stats = json.load(f)
-                    # 确保question_types是dict
-                    if 'question_types' in stats and isinstance(stats['question_types'], dict):
-                        stats['question_types'] = defaultdict(int, stats['question_types'])
-                    return stats
-            except Exception as e:
-                logger.warning(f"加载统计文件失败: {e}")
-        
-        return {
+        # 默认统计字段（确保所有新字段都有默认值）
+        default_stats = {
             "total_questions": 0,
             "successful_answers": 0,
             "failed_answers": 0,
@@ -84,7 +74,35 @@ class QAStats:
             "unanswered_questions": [],
             "cache_hits": 0,
             "cache_misses": 0,
+            # 新增统计指标（v0.3.1+）
+            "hourly_questions": defaultdict(int),  # 每小时问答量
+            "response_time_p50": 0,  # 响应时间P50
+            "response_time_p95": 0,  # 响应时间P95
+            "response_time_p99": 0,  # 响应时间P99
+            "response_times": [],  # 响应时间列表（用于计算百分位数）
+            "max_response_time_ms": 0,  # 最大响应时间
+            "min_response_time_ms": 0,  # 最小响应时间
         }
+
+        if self.stats_file.exists():
+            try:
+                with open(self.stats_file, 'r', encoding='utf-8') as f:
+                    stats = json.load(f)
+                    # 合并加载的统计和默认统计（确保新字段存在）
+                    for key, default_value in default_stats.items():
+                        if key not in stats:
+                            stats[key] = default_value
+                        # 确保question_types是defaultdict
+                        if key == 'question_types' and isinstance(stats[key], dict):
+                            stats[key] = defaultdict(int, stats[key])
+                        # 确保hourly_questions是defaultdict
+                        if key == 'hourly_questions' and isinstance(stats[key], dict):
+                            stats[key] = defaultdict(int, stats[key])
+                    return stats
+            except Exception as e:
+                logger.warning(f"加载统计文件失败: {e}")
+
+        return default_stats
 
     def _save_stats(self):
         """保存统计数据到文件"""
@@ -223,6 +241,29 @@ class QAStats:
             old_llm = self._stats["avg_llm_time_ms"]
             self._stats["avg_llm_time_ms"] = (old_llm * (total - 1) + llm_time_ms) / total
 
+            # 更新最大/最小响应时间
+            if self._stats["max_response_time_ms"] == 0 or response_time_ms > self._stats["max_response_time_ms"]:
+                self._stats["max_response_time_ms"] = response_time_ms
+            if self._stats["min_response_time_ms"] == 0 or response_time_ms < self._stats["min_response_time_ms"]:
+                self._stats["min_response_time_ms"] = response_time_ms
+
+            # 记录响应时间用于百分位数计算（保留最近1000条）
+            self._stats["response_times"].append(response_time_ms)
+            if len(self._stats["response_times"]) > 1000:
+                self._stats["response_times"] = self._stats["response_times"][-1000:]
+
+            # 计算百分位数
+            if len(self._stats["response_times"]) >= 10:
+                sorted_times = sorted(self._stats["response_times"])
+                n = len(sorted_times)
+                self._stats["response_time_p50"] = sorted_times[int(n * 0.5)]
+                self._stats["response_time_p95"] = sorted_times[int(n * 0.95)]
+                self._stats["response_time_p99"] = sorted_times[int(n * 0.99)]
+
+            # 记录每小时问答量
+            current_hour = datetime.now().strftime("%Y-%m-%d %H:00")
+            self._stats["hourly_questions"][current_hour] = self._stats["hourly_questions"].get(current_hour, 0) + 1
+
             # 记录最近问题
             recent_q = {
                 "question": question[:100],
@@ -255,6 +296,13 @@ class QAStats:
         """获取统计摘要"""
         stats = self._stats.copy()
         stats["question_types"] = dict(stats.get("question_types", {}))
+        
+        # 处理hourly_questions（可能包含defaultdict）
+        if isinstance(stats.get("hourly_questions"), defaultdict):
+            stats["hourly_questions"] = dict(stats["hourly_questions"])
+        
+        # 移除response_times列表（不直接返回）
+        stats.pop("response_times", None)
         
         # 计算成功率
         total = stats["total_questions"]

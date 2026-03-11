@@ -1,8 +1,10 @@
 """文档管理API路由"""
 
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from backend.api.models import (
     UploadResponse, DocListResponse, DocInfo,
@@ -19,18 +21,38 @@ logger = get_logger(__name__)
 # 创建路由
 router = APIRouter(prefix="/docs", tags=["文档管理"])
 
+# 创建线程池用于后台文档处理
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _process_document_task(doc_service: DocService, tmp_path: str, file_name: str):
+    """后台文档处理任务"""
+    try:
+        logger.info(f"开始后台处理文档: {file_name}")
+        logger.info(f"DEBUG: 调用 doc_service.upload_document, tmp_path={tmp_path}")
+        result = doc_service.upload_document(tmp_path, file_name)
+        logger.info(f"文档处理完成: {file_name}, 结果: {result.get('status')}, 详情: {result.get('message', '')}")
+    except Exception as e:
+        logger.error(f"后台文档处理失败: {e}", exc_info=True)
+    finally:
+        # 后台任务完成后清理临时文件
+        try:
+            import os
+            os.unlink(tmp_path)
+            logger.info(f"临时文件已清理: {tmp_path}")
+        except OSError:
+            pass
+
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    doc_service: DocService = Depends(get_doc_service),
-    background_tasks: BackgroundTasks = None
+    doc_service: DocService = Depends(get_doc_service)
 ):
-    """上传文档接口（支持异步后台处理）
+    """上传文档接口（异步后台处理）
     
     Args:
         file: 上传的文件
-        background_tasks: 后台任务处理器
         
     Returns:
         UploadResponse: 上传结果（立即返回，文档处理在后台进行）
@@ -47,44 +69,19 @@ async def upload_document(
             tmp.write(content)
             tmp_path = tmp.name
         
-        try:
-            # 检查文件大小，决定是否使用后台处理
-            file_size_mb = len(content) / (1024 * 1024)
-            large_file_threshold = 5  # 超过5MB使用后台处理
-            
-            if file_size_mb > large_file_threshold and background_tasks:
-                # 大文件：后台异步处理
-                def process_document():
-                    try:
-                        doc_service.upload_document(tmp_path, file.filename)
-                    except Exception as e:
-                        logger.error(f"后台文档处理失败: {e}")
-                
-                background_tasks.add_task(process_document)
-                
-                return UploadResponse(
-                    status="processing",
-                    message=f"文件较大（{file_size_mb:.1f}MB），正在后台处理中...",
-                    file_name=file.filename,
-                    doc_count=None
-                )
-            else:
-                # 小文件：同步处理
-                result = doc_service.upload_document(tmp_path, file.filename)
-                
-                return UploadResponse(
-                    status=result.get("status", "error"),
-                    message=result.get("message", ""),
-                    file_name=file.filename,
-                    doc_count=result.get("doc_count")
-                )
-        finally:
-            # 清理临时文件
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
+        # 检查文件大小（调试用）
+        file_size_mb = len(content) / (1024 * 1024)
+        logger.info(f"上传文件大小: {file_size_mb:.2f}MB")
+        
+        # 使用线程池异步处理
+        _executor.submit(_process_document_task, doc_service, tmp_path, file.filename)
+        
+        return UploadResponse(
+            status="processing",
+            message=f"文件正在后台处理中...",
+            file_name=file.filename,
+            doc_count=None
+        )
     except Exception as e:
         logger.error(f"上传文档错误: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

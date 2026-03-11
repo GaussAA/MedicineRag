@@ -221,7 +221,37 @@ class ConversationMemory:
         if len(context.messages) > self.max_history * 2:  # 包含 user 和 assistant
             context.messages = context.messages[-self.max_history * 2:]
         
-        # TODO: 裁剪 token 数量（需要 tokenizer）
+        # 基于字符近似估算token并进行裁剪（约1.5字符/token）
+        # 注意：这是近似估算，不使用tokenizer库以保持轻量
+        self._trim_by_token_estimate(context)
+
+    def _trim_by_token_estimate(self, context: "ConversationContext") -> None:
+        """根据token估算值裁剪上下文
+        
+        使用字符数/1.5作为token数的近似估算，
+        这是一个轻量级的实现，不需要额外的tokenizer库。
+        
+        Args:
+            context: 对话上下文
+        """
+        if not context.messages:
+            return
+        
+        # 计算当前token估算值
+        total_chars = sum(len(m.content) for m in context.messages)
+        estimated_tokens = int(total_chars / 1.5)
+        
+        # 如果超过限制，逐步裁剪
+        max_tokens = self.max_history * 200  # 每轮对话约200 tokens
+        if estimated_tokens <= max_tokens:
+            return
+        
+        # 从最旧的消息开始裁剪
+        while estimated_tokens > max_tokens and len(context.messages) > 2:
+            # 移除最旧的消息（第一个）
+            removed_content = context.messages[0].content
+            context.messages = context.messages[1:]
+            estimated_tokens -= int(len(removed_content) / 1.5)
 
     def get_stats(self) -> Dict[str, Any]:
         """获取记忆统计"""

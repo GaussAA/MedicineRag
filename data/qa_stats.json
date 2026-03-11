@@ -1,17 +1,41 @@
 {
-  "total_questions": 15,
-  "successful_answers": 14,
+  "total_questions": 19,
+  "successful_answers": 18,
   "failed_answers": 1,
-  "no_result_answers": 0,
+  "no_result_answers": 3,
   "question_types": {
-    "disease": 7
+    "disease": 8
   },
   "sensitive_blocked": 0,
   "emergency_warnings": 0,
-  "avg_response_time_ms": 92675.95861752827,
-  "avg_retrieval_time_ms": 22.353839874267578,
-  "avg_llm_time_ms": 91570.26158968608,
+  "avg_response_time_ms": 77938.05692070408,
+  "avg_retrieval_time_ms": 17.79887550755551,
+  "avg_llm_time_ms": 77053.8439374221,
   "recent_questions": [
+    {
+      "question": "啥是高血压",
+      "type": "disease",
+      "success": true,
+      "has_result": true,
+      "response_time_ms": 90656.32891654968,
+      "timestamp": "2026-03-11T14:30:12.139171"
+    },
+    {
+      "question": "hello",
+      "type": null,
+      "success": true,
+      "has_result": false,
+      "response_time_ms": 23.947954177856445,
+      "timestamp": "2026-03-11T12:03:50.453133"
+    },
+    {
+      "question": "hello",
+      "type": null,
+      "success": true,
+      "has_result": false,
+      "response_time_ms": 1.9419193267822266,
+      "timestamp": "2026-03-11T00:17:15.548051"
+    },
     {
       "question": "hello",
       "type": null,
@@ -133,7 +157,35 @@
       "timestamp": "2026-03-09T02:00:16.375317"
     }
   ],
-  "unanswered_questions": [],
+  "unanswered_questions": [
+    {
+      "question": "hello",
+      "timestamp": "2026-03-11T00:10:48.923207"
+    },
+    {
+      "question": "hello",
+      "timestamp": "2026-03-11T00:17:15.548019"
+    },
+    {
+      "question": "hello",
+      "timestamp": "2026-03-11T12:03:50.453075"
+    }
+  ],
   "cache_hits": 0,
-  "cache_misses": 0
+  "cache_misses": 4,
+  "hourly_questions": {
+    "2026-03-11 00:00": 1,
+    "2026-03-11 12:00": 1,
+    "2026-03-11 14:00": 1
+  },
+  "response_time_p50": 0,
+  "response_time_p95": 0,
+  "response_time_p99": 0,
+  "response_times": [
+    1.9419193267822266,
+    23.947954177856445,
+    90656.32891654968
+  ],
+  "max_response_time_ms": 90656.32891654968,
+  "min_response_time_ms": 1.9419193267822266
 }

@@ -33,7 +33,7 @@ class DocumentProcessor:
         """
         self._chunker = chunker or IntelligentChunker(
             chunk_size=config.CHUNK_SIZE,
-            overlap=config.CHUNK_OVERLAP
+            chunk_overlap=config.CHUNK_OVERLAP
         )
         self._chunk_cache = chunk_cache or ChunkCache(max_size=20)
 
@@ -127,13 +127,65 @@ class DocumentProcessor:
             return f.read()
 
     def _read_pdf(self, file_path: str) -> str:
-        """读取PDF文件"""
-        # 优先使用 pymupdf4llm（高精度，支持Markdown）
+        """读取PDF文件 - 智能选择最佳解析方法
+        
+        优先级：
+        1. fitz直接提取（快速，适合中文PDF）
+        2. pymupdf4llm（高精度，但中文PDF较慢）
+        3. LlamaIndex SimpleDirectoryReader（备选）
+        """
+        # 方法1：优先使用fitz直接提取（极快，0.5秒 vs pymupdf4llm的8分钟）
+        try:
+            import fitz
+            doc = fitz.open(file_path)
+            
+            # 检测是否为扫描版PDF（没有文本层）
+            has_text = any(doc[page_num].get_text().strip() for page_num in range(len(doc)))
+            
+            if has_text:
+                # 提取文本并添加基本Markdown格式
+                all_text = []
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    text = page.get_text('text')
+                    
+                    # 简单清理：去除多余空白
+                    text = text.strip()
+                    if text:
+                        # 添加页码标记（可选）
+                        all_text.append(f"--- 第 {page_num + 1} 页 ---\n\n{text}")
+                
+                doc.close()
+                
+                result = '\n\n'.join(all_text)
+                if result.strip():
+                    logger.info(f"使用 fitz 快速解析 PDF: {len(result)} 字符")
+                    return result
+            
+            doc.close()
+        except Exception as e:
+            logger.warning(f"fitz 解析失败: {e}")
+        
+        # 方法2：pymupdf4llm（高精度，但中文PDF较慢）
         try:
             import pymupdf4llm
-            md_text = pymupdf4llm.to_markdown(file_path)
-            logger.info("使用 pymupdf4llm 解析 PDF")
-            return md_text
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+            
+            # 使用线程执行并设置超时
+            def _parse_pdf():
+                return pymupdf4llm.to_markdown(file_path)
+            
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_parse_pdf)
+                try:
+                    # 对于高精度模式，设置更长的超时时间
+                    md_text = future.result(timeout=30)
+                    logger.info("使用 pymupdf4llm 解析 PDF")
+                    return md_text
+                except FuturesTimeoutError:
+                    logger.warning(f"pymupdf4llm 解析超时(30秒)，回退到 SimpleDirectoryReader")
+                    return self._read_with_llama_index(file_path)
+                    
         except ImportError:
             logger.warning("pymupdf4llm 未安装，回退到 SimpleDirectoryReader")
             return self._read_with_llama_index(file_path)

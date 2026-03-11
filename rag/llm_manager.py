@@ -232,9 +232,9 @@ class LLMManager:
         if not history:
             return query
 
-        # 配置参数
-        max_history_turns = 5
-        max_answer_length = 300
+        # 使用配置参数
+        max_history_turns = config.MAX_HISTORY_TURNS
+        max_answer_length = config.MAX_ANSWER_LENGTH
 
         # 保留最近N轮对话
         recent_history = history[-max_history_turns:] if len(history) > max_history_turns else history
@@ -242,7 +242,7 @@ class LLMManager:
         # 构建历史上下文（带长度控制）
         context_parts = []
         total_length = 0
-        max_context_length = 1500
+        max_context_length = config.MAX_CONTEXT_LENGTH
 
         for h in reversed(recent_history):
             question = h.get('question', '')[:200]

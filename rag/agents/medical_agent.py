@@ -26,13 +26,14 @@ logger = get_logger(__name__)
 @dataclass
 class AgentConfig:
     """Agent 配置"""
-    max_steps: int = 10
+    max_steps: int = 5
     temperature: float = 0.2
     timeout: int = 300
     enable_reflection: bool = True
     enable_followup: bool = True
     enable_knowledge_gap: bool = True
     min_confidence_threshold: float = 0.5
+    min_docs_for_answer: int = 2  # 最少检索文档数，少于此数则继续检索
 
 
 class MedicalAgent(BaseAgent):
@@ -152,22 +153,31 @@ class MedicalAgent(BaseAgent):
             "steps": []
         }
         
+        # 获取对话历史用于增强上下文
+        history_context = self._get_history_context(session_id, query)
+        
         # 步骤循环
         for step_idx in range(self.max_steps):
             logger.info(f"Agent 步骤 {step_idx + 1}/{self.max_steps}")
             
-            # 1. 思考
-            thought = await self._think(query, context_data, step_idx)
-            self._add_step(thought, state=AgentState.THINKING)
-            
-            # 2. 决定行动
-            action, action_input = self._decide_action(thought, context_data)
-            
-            if action is None:
-                # 无需行动，进入反思
+            # 早停检查：如果已有足够的检索文档，直接生成答案
+            retrieved_docs = context_data.get("retrieved_docs", [])
+            if len(retrieved_docs) >= self.config.min_docs_for_answer:
+                logger.info(f"已检索到 {len(retrieved_docs)} 个文档，满足回答条件，提前终止")
                 break
             
-            # 3. 执行行动
+            # 1. 思考 + 决定行动 + 反思（合并为一次 LLM 调用）
+            should_continue, thought, action, action_input = await self._think_decide_reflect(
+                query, context_data, history_context, step_idx
+            )
+            
+            self._add_step(thought=thought, state=AgentState.THINKING)
+            
+            if action is None or not should_continue:
+                # 无需行动或已足够，跳出循环
+                break
+            
+            # 2. 执行行动
             self.state = AgentState.ACTING
             observation = await self._execute_action(action, action_input, context_data)
             
@@ -179,24 +189,14 @@ class MedicalAgent(BaseAgent):
                 state=AgentState.ACTING
             )
             
-            # 4. 反思
-            # 先更新上下文，确保reflection能检查到最新的检索结果
+            # 3. 更新上下文
             context_data = self._update_context(action, observation, context_data)
-            
-            if self.config.enable_reflection:
-                should_continue, reflection = await self._reflect_with_observation(
-                    query, observation, context_data
-                )
-                self._add_step(thought=reflection, state=AgentState.REFLECTING)
-                
-                if not should_continue:
-                    break
         
         # 生成最终答案
         answer, sources = await self._generate_final_answer(query, context_data)
         
         # 计算置信度
-        confidence = self._calculate_confidence(context_data)
+        confidence = self._calculate_confidence(context_data, query)
         
         # 生成追问
         followup_questions = []
@@ -235,6 +235,195 @@ class MedicalAgent(BaseAgent):
             knowledge_gaps=knowledge_gaps,
             requires_followup=requires_followup
         )
+
+    def _get_history_context(self, session_id: str, current_query: str) -> str:
+        """获取对话历史上下文
+        
+        Args:
+            session_id: 会话ID
+            current_query: 当前问题
+            
+        Returns:
+            str: 格式化的历史上下文
+        """
+        try:
+            history = self.memory.get_conversation(session_id, count=3)
+            if not history:
+                return ""
+            
+            context_parts = []
+            for msg in history[-3:]:  # 最近3轮
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:200]
+                context_parts.append(f"{role}: {content}")
+            
+            return "\n".join(context_parts)
+        except Exception:
+            return ""
+
+    async def _think_decide_reflect(
+        self,
+        query: str,
+        context: Dict[str, Any],
+        history_context: str,
+        step_idx: int
+    ) -> tuple[bool, str, Optional[str], Optional[Dict[str, Any]]]:
+        """思考 + 决定行动 + 反思（合并为一次 LLM 调用）
+        
+        这是核心优化：减少 LLM 调用次数，从每步 2-3 次减少到 1 次
+        
+        Args:
+            query: 用户查询
+            context: 上下文
+            history_context: 对话历史
+            step_idx: 步骤索引
+            
+        Returns:
+            tuple: (是否继续, 思考结果, 行动名, 行动输入)
+        """
+        docs = context.get("retrieved_docs", [])
+        docs_summary = self._summarize_docs(docs)
+        
+        # 构建合并后的 prompt
+        prompt = f"""你是一个医疗问答 Agent。请分析问题并决定下一步行动。
+
+[步骤 {step_idx + 1}]
+
+【用户问题】
+{query}
+
+【对话历史】
+{history_context or "无历史对话"}
+
+【当前状态】
+- 已检索文档数: {len(docs)}
+- 文档摘要: {docs_summary}
+- 安全状态: {context.get("is_safe", True)}
+
+【可执行行动】
+1. check_security - 检查安全问题（敏感词、紧急症状）
+2. retrieve_docs - 检索知识库文档
+3. generate_followup_questions - 生成追问问题
+4. identify_knowledge_gap - 识别知识缺口
+5. done - 无需更多行动，可以生成答案
+
+请按以下 JSON 格式输出：
+{{
+    "analysis": "你对问题的分析（1-2句话）",
+    "action": "选择的行动名称",
+    "action_input": {{"行动参数"}},
+    "reason": "选择该行动的理由",
+    "should_continue": true/false,
+    "done_reason": "如果 action 是 done，说明为什么可以生成答案"
+}}
+
+要求：
+- 如果 docs 数量 >= 2 且与问题相关，应选择 "done"
+- 如果还没有检索文档，应先 "retrieve_docs"
+- 如果需要更多上下文，可以 "generate_followup_questions"
+- 如果置信度低，可以 "identify_knowledge_gap"
+- always respond in JSON format"""
+        
+        try:
+            response = self.rag_engine.llm_manager.generate(
+                query=prompt,
+                context="",
+                question_type="reasoning"
+            )
+            
+            # 解析 JSON 响应
+            result = self._parse_json_response(response)
+            
+            if result:
+                action = result.get("action")
+                action_input = result.get("action_input", {})
+                should_continue = result.get("should_continue", True)
+                thought = f"{result.get('analysis', '')} → {result.get('reason', '')}"
+                
+                return should_continue, thought, action, action_input
+            else:
+                # 解析失败，使用默认逻辑
+                return self._default_think_decide(query, context, step_idx)
+                
+        except Exception as e:
+            logger.warning(f"合并思考调用LLM失败: {e}, 使用默认逻辑")
+            return self._default_think_decide(query, context, step_idx)
+
+    def _summarize_docs(self, docs: List[Dict[str, Any]]) -> str:
+        """生成文档摘要
+        
+        Args:
+            docs: 文档列表
+            
+        Returns:
+            str: 摘要文本
+        """
+        if not docs:
+            return "无"
+        
+        summaries = []
+        for doc in docs[:3]:  # 最多3个
+            text = doc.get("text", "")[:150]
+            summaries.append(text)
+        
+        return " | ".join(summaries)
+
+    def _parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """解析 JSON 响应
+        
+        Args:
+            response: LLM 响应
+            
+        Returns:
+            Optional[Dict]: 解析后的结果
+        """
+        import json
+        import re
+        
+        if not response:
+            return None
+        
+        # 尝试提取 JSON
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        # 尝试直接解析
+        try:
+            return json.loads(response)
+        except:
+            return None
+
+    def _default_think_decide(
+        self,
+        query: str,
+        context: Dict[str, Any],
+        step_idx: int
+    ) -> tuple[bool, str, Optional[str], Optional[Dict[str, Any]]]:
+        """默认的思考-决策逻辑（当 LLM 调用失败时使用）
+        
+        Args:
+            query: 用户查询
+            context: 上下文
+            step_idx: 步骤索引
+            
+        Returns:
+            tuple: (是否继续, 思考结果, 行动名, 行动输入)
+        """
+        docs = context.get("retrieved_docs", [])
+        
+        if not docs:
+            # 还没有检索
+            return True, "需要检索知识库", "retrieve_docs", {"query": query, "top_k": 5}
+        elif len(docs) >= 2:
+            # 已有足够文档
+            return False, "已获得足够信息", None, None
+        else:
+            # 文档较少，尝试补充
+            return True, "检索结果较少，尝试补充检索", "retrieve_docs", {"query": query, "top_k": 5}
 
     async def _think(self, query: str, context: Dict[str, Any], step_idx: int = 0) -> str:
         """思考步骤
@@ -346,6 +535,9 @@ class MedicalAgent(BaseAgent):
             return f"未找到工具: {action}"
         
         try:
+            # 确保必要参数被传递（从context中获取）
+            action_input = self._ensure_required_params(action, action_input, context)
+            
             # 同步工具调用包装为异步
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -360,6 +552,50 @@ class MedicalAgent(BaseAgent):
         except Exception as e:
             logger.error(f"工具执行失败: {action}, {e}")
             return f"工具执行失败: {str(e)}"
+
+    def _ensure_required_params(
+        self,
+        action: str,
+        action_input: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """确保工具调用包含必需参数
+        
+        Args:
+            action: 行动名称
+            action_input: 当前行动输入
+            context: 上下文
+            
+        Returns:
+            Dict: 补全后的行动输入
+        """
+        # 获取用户原始问题
+        query = context.get("query", "")
+        
+        # 根据工具类型补充必要参数
+        if action == "generate_followup_questions":
+            if "query" not in action_input:
+                action_input["query"] = query
+            if "question_type" not in action_input:
+                action_input["question_type"] = context.get("question_type", "unknown")
+                
+        elif action == "identify_knowledge_gap":
+            if "query" not in action_input:
+                action_input["query"] = query
+            if "confidence" not in action_input:
+                action_input["confidence"] = context.get("confidence", 0.5)
+                
+        elif action == "retrieve_docs":
+            if "query" not in action_input:
+                action_input["query"] = query
+            if "top_k" not in action_input:
+                action_input["top_k"] = 5
+                
+        elif action == "check_security":
+            if "query" not in action_input:
+                action_input["query"] = query
+        
+        return action_input
 
     def _update_context(
         self,
@@ -543,11 +779,17 @@ class MedicalAgent(BaseAgent):
 
 请给出回答："""
 
-    def _calculate_confidence(self, context: Dict[str, Any]) -> float:
-        """计算置信度
+    def _calculate_confidence(self, context: Dict[str, Any], query: str = "") -> float:
+        """计算置信度（多维度加权）
+        
+        改进后的置信度计算：
+        - 文档数量: 0-0.2
+        - 相似度分数: 0-0.4
+        - 问题覆盖度: 0-0.4
         
         Args:
             context: 上下文
+            query: 用户问题（用于评估覆盖度）
             
         Returns:
             float: 置信度 (0-1)
@@ -557,15 +799,62 @@ class MedicalAgent(BaseAgent):
         if not docs:
             return 0.0
         
-        # 基于文档数量和分数计算
-        if len(docs) == 0:
-            return 0.0
-        elif len(docs) >= 3:
-            return 0.8
-        elif len(docs) >= 2:
-            return 0.6
-        else:
-            return 0.4
+        score = 0.0
+        
+        # 1. 文档数量得分 (0-0.2)
+        # 0个=0, 1个=0.05, 2个=0.1, 3个=0.15, 4+=0.2
+        count_score = min(len(docs) * 0.05, 0.2)
+        score += count_score
+        
+        # 2. 平均相似度得分 (0-0.4)
+        scores = [d.get("score", 0) for d in docs if d.get("score")]
+        if scores:
+            avg_score = sum(scores) / len(scores)
+            # 相似度分数通常在 0-1 范围
+            similarity_score = avg_score * 0.4
+            score += similarity_score
+        
+        # 3. 文档与问题的相关度估算 (0-0.4)
+        # 简单估算：检查文档是否包含问题的关键词
+        if query:
+            relevance_score = self._estimate_relevance(query, docs)
+            score += relevance_score * 0.4
+        
+        # 4. 额外加分：有来源标注
+        has_sources = any(d.get("metadata", {}).get("file_name") for d in docs)
+        if has_sources:
+            score += 0.1
+        
+        # 确保在 0-1 范围内
+        return min(score, 1.0)
+
+    def _estimate_relevance(self, query: str, docs: List[Dict[str, Any]]) -> float:
+        """估算文档与问题的相关度
+        
+        Args:
+            query: 用户问题
+            docs: 文档列表
+            
+        Returns:
+            float: 相关度 (0-1)
+        """
+        # 简单关键词匹配
+        query_keywords = set(query.lower())
+        # 去除常见停用词
+        stopwords = {"的", "是", "在", "有", "和", "与", "或", "什么", "怎么", "如何", "为什么", "请问"}
+        query_keywords = query_keywords - stopwords
+        
+        if not query_keywords:
+            return 0.5  # 默认值
+        
+        relevant_count = 0
+        for doc in docs:
+            text = doc.get("text", "").lower()
+            # 检查是否有任意关键词匹配
+            if any(kw in text for kw in query_keywords):
+                relevant_count += 1
+        
+        return relevant_count / len(docs) if docs else 0
 
     async def _generate_followup(
         self,

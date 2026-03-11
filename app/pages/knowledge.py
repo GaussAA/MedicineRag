@@ -117,6 +117,8 @@ def main():
                             result = api_client.delete_document(doc_id)
                             if result["status"] == "success":
                                 st.success("删除成功")
+                                # 修复：清除主页面缓存
+                                st.session_state._stats_cache = {"data": None, "timestamp": 0}
                                 st.rerun()
                             else:
                                 st.error(result["message"])
@@ -197,6 +199,8 @@ def main():
                             result = api_client.clear_knowledge_base()
                             if result["status"] == "success":
                                 st.success(result["message"])
+                                # 修复：清除主页面缓存
+                                st.session_state._stats_cache = {"data": None, "timestamp": 0}
                                 st.session_state.show_clear_confirm = False
                                 st.rerun()
                             else:
